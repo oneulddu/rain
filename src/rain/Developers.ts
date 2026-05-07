@@ -156,6 +156,10 @@ export const Contributors = {
         name: "theunrealzaka",
         id: 1268335382118924406n,
     },
+    oneulffu: {
+        name: "oneulffu",
+        id: 249210103327227904n,
+    },
     tralwdwd: {
         name: "tralwdwdd",
         id: 1278723517436788897n
