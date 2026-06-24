@@ -23,10 +23,38 @@ function isNewerVersion(remoteVersion: string, currentVersion: string): boolean 
     return remotePatch > currentPatch;
 }
 
-export function downloadUpdate() {
-    _setIsChecking?.(true);
-    UpdateModule.nativeDownload();
-    _setIsChecking?.(false);
+export async function downloadUpdate() {
+    if (!_setIsChecking) return;
+
+    try {
+        _setIsChecking(true);
+
+        await UpdateModule.nativeDownload();
+
+        openAlert(
+            "rain-update-restart-alert",
+            <AlertModal
+                title={Strings.RELOAD_DISCORD}
+                content={Strings.UPDATE_RESTART_MESSAGE}
+                actions={
+                    <AlertActions>
+                        <AlertActionButton
+                            text={Strings.RESTART_NOW}
+                            variant="primary"
+                            onPress={() => {
+                                BundleUpdaterManager.reload();
+                            }}
+                        />
+                        <AlertActionButton text={Strings.RESTART_LATER} variant="secondary" />
+                    </AlertActions>
+                }
+            />,
+        );
+    } catch (error) {
+        console.error("Failed to download update bundle:", error);
+    } finally {
+        _setIsChecking(false);
+    }
 }
 
 export function checkForUpdate() {
@@ -42,46 +70,41 @@ export function checkForUpdate() {
     return hasUpdate;
 }
 
-export async function versionCheck() {
+export function versionCheck() {
+    const version = getDebugInfo().discord.build;
+
     if (useLoaderConfig.getState().customLoadUrl.enabled === true) return;
+    if (useSettings.getState().disableUpdateWarnings === true) return;
+    if (supportedVersions.includes(version)) return;
 
-    // Wait for settings to hydrate before checking
-    const checkSettings = () => {
-        if (useSettings.getState().disableUpdateWarnings === true) return;
-
-        const version = getDebugInfo().discord.build;
-        if (!supportedVersions.includes(version)) {
-            openAlert(
-                "incompatible-version-alert",
-                <AlertModal
-                    title={Strings.INCOMPATIBLE_VERSION}
-                    content={Strings.INCOMPATIBLE_VERSION_DESC}
-                    actions={
-                        <AlertActions>
-                            {Platform.OS === "android" && <AlertActionButton
-                                text={Strings.OPEN_MANAGER}
-                                variant="primary"
-                                onPress={() => {
-                                    Linking.openURL("raincord://");
-                                }}
-                            />}
-                            {Platform.OS === "ios" && <AlertActionButton
-                                text={Strings.IPA_DOWNLOAD}
-                                variant="primary"
-                                onPress={() => {
-                                    Linking.openURL("https://codeberg.org/raincord/RainTweak/releases");
-                                }}
-                            />}
-                            <AlertActionButton text={Strings.CONTINUE_ANYWAYS} variant="destructive" />
-                        </AlertActions>
-                    }
-                />,
-            );
-        }
-    };
-
-    // Use setTimeout to ensure settings has had a chance to load
-    setTimeout(checkSettings, 100);
+    if (!supportedVersions.includes(version)) {
+        openAlert(
+            "incompatible-version-alert",
+            <AlertModal
+                title={Strings.INCOMPATIBLE_VERSION}
+                content={Strings.INCOMPATIBLE_VERSION_DESC}
+                actions={
+                    <AlertActions>
+                        {Platform.OS === "android" && <AlertActionButton
+                            text={Strings.OPEN_MANAGER}
+                            variant="primary"
+                            onPress={() => {
+                                Linking.openURL("raincord://");
+                            }}
+                        />}
+                        {Platform.OS === "ios" && <AlertActionButton
+                            text={Strings.IPA_DOWNLOAD}
+                            variant="primary"
+                            onPress={() => {
+                                Linking.openURL("https://codeberg.org/raincord/RainTweak/releases");
+                            }}
+                        />}
+                        <AlertActionButton text={Strings.CONTINUE_ANYWAYS} variant="destructive" />
+                    </AlertActions>
+                }
+            />,
+        );
+    }
 }
 
 export default function Updater() {
@@ -114,25 +137,6 @@ export default function Updater() {
                         loading={isCheckingForUpdates}
                         onPress={() => {
                             downloadUpdate();
-                            openAlert(
-                                "rain-update-restart-alert",
-                                <AlertModal
-                                    title={Strings.RELOAD_DISCORD}
-                                    content={Strings.UPDATE_RESTART_MESSAGE}
-                                    actions={
-                                        <AlertActions>
-                                            <AlertActionButton
-                                                text={Strings.RESTART_NOW}
-                                                variant="primary"
-                                                onPress={() => {
-                                                    BundleUpdaterManager.reload();
-                                                }}
-                                            />
-                                            <AlertActionButton text={Strings.RESTART_LATER} variant="secondary" />
-                                        </AlertActions>
-                                    }
-                                />,
-                            );
                         }}
                     />
                 </View>}

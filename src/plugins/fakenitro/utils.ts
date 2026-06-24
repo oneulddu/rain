@@ -14,6 +14,7 @@ function extractUnusableEmojis(messageString: string, size: number) {
     for (const emojiString of emojiStrings) {
         // Fetch required info about the emoji
         const emoji = getCustomEmojiById(emojiString[2]);
+        if (emoji.guildId === undefined) { return; }
         // Check emoji usability
         if (emoji.guildId !== getGuildId() || emoji.animated) {
             // Remove emote from original msg
@@ -54,7 +55,7 @@ export function modifyIfNeeded(msg: Message) {
     msg.content = newContent;
 
     if (extractedEmojis.length > 0)
-        msg.content += "\n" + extractedEmojis.join("\ni");
+        msg.content += "\n" + extractedEmojis.join("\n");
 
     // Set invalidEmojis to empty to prevent Discord yelling to you about you not having nitro
     msg.invalidEmojis = [];
