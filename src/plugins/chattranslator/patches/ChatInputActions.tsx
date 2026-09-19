@@ -4,7 +4,8 @@ import { showToast } from "@api/ui/toasts";
 import { findByDisplayName, findByName, findByTypeDisplayName } from "@metro";
 import { FluxUtils, React, ReactNative } from "@metro/common";
 import { findByStoreName } from "@metro/wrappers";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
+import type { StyleProp, ViewStyle } from "react-native";
 
 import { openChatTranslatorSettings } from "../settings/openSettings";
 import {
@@ -217,12 +218,12 @@ export default function patchChatInputActions() {
     return after(renderTarget.key, renderTarget.target, (_, ret) => {
         if (!React.isValidElement(ret)) return ret;
 
-        // Keep Discord's action row as the direct child of the composer. An
-        // extra wrapper changes how its margins and vertical alignment apply.
-        const { children } = ret.props as { children?: ReactNode };
+        // Keep Discord's size, margins and ref, but explicitly arrange the two
+        // actions horizontally: its original one-button container may be a column.
+        const { children, style } = ret.props as { children?: ReactNode; style?: StyleProp<ViewStyle> };
         return React.cloneElement(
-            ret,
-            null,
+            ret as ReactElement<{ style?: StyleProp<ViewStyle> }>,
+            { style: [style, { flexDirection: "row", alignItems: "center" }] },
             children,
             React.createElement(ChatTranslatorInputAction, { key: "chat-translator-input-action" }),
         );

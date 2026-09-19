@@ -99,7 +99,7 @@ function settingsFixture({ available = true, navigatorByName = true, pushThrows 
     return { open: openChatTranslatorSettings, pushed, errors, toasts, Navigator, Settings, CustomPageRenderer, popped: () => popped };
 }
 
-function inputFixture() {
+function inputFixture({ direction } = {}) {
     const menus = [], actions = [], timers = [];
     const settings = settingsFixture();
     let patchRender;
@@ -141,7 +141,8 @@ function inputFixture() {
     }, { setTimeout: fn => timers.push(fn) });
     install();
     const nativeChildren = [createElement("AttachButton", { key: "attach" })];
-    const nativeStyle = [{ flexDirection: "row", alignItems: "center" }, { alignSelf: "flex-end", marginBottom: 4 }];
+    // The real one-button container does not necessarily declare a row.
+    const nativeStyle = [{ ...(direction ? { flexDirection: direction } : {}), alignItems: "center" }, { alignSelf: "flex-end", marginBottom: 4 }];
     const onLayout = () => {};
     const original = createElement("NativeActionRow", {
         key: "native-actions", ref: { current: null },
@@ -154,17 +155,31 @@ function inputFixture() {
     return { press, slot, menus, actions, settings, original, rendered, patchRender, flush: () => { while (timers.length) timers.shift()(); } };
 }
 
-test("translation is inserted inside the native action row without replacing its layout or refs", () => {
+test("translation keeps the native container, vertical layout and refs while adding a horizontal arrangement", () => {
     const f = inputFixture();
     assert.equal(f.rendered.type, f.original.type);
     assert.equal(f.rendered.key, f.original.key);
     assert.equal(f.rendered.props.ref, f.original.props.ref);
-    assert.equal(f.rendered.props.style, f.original.props.style);
+    assert.equal(f.rendered.props.style[0], f.original.props.style);
     assert.equal(f.rendered.props.onLayout, f.original.props.onLayout);
     assert.equal(f.rendered.props.pointerEvents, "box-none");
     assert.equal(f.rendered.props.children[0], f.original.props.children);
     assert.equal(f.original.props.children.length, 1);
     assert.equal(f.rendered.props.children[1].key, "chat-translator-input-action");
+});
+
+test("default-column and explicit-column native containers place translation beside the original action", () => {
+    for (const direction of [undefined, "column", "row"]) {
+        const f = inputFixture({ direction });
+        const resolved = Object.assign({}, ...f.rendered.props.style.flat(Infinity));
+        assert.equal(resolved.flexDirection, "row");
+        assert.equal(resolved.alignItems, "center");
+        assert.equal(resolved.alignSelf, "flex-end");
+        assert.equal(resolved.marginBottom, 4);
+        assert.equal(resolved.height, undefined);
+        assert.equal(resolved.paddingTop, undefined);
+        assert.equal(resolved.paddingBottom, undefined);
+    }
 });
 
 test("hidden actions stay hidden and repeated renders do not mutate or duplicate native children", () => {
