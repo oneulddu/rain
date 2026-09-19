@@ -3,6 +3,28 @@ import { constants } from "@metro/common";
 
 const getPermName = findByProps("getPermissionName")?.getPermissionName ?? findByName("getPermissionName", false);
 
+export const PERMISSIONS: Record<string, any> = constants?.Permissions ?? {};
+
+export function parseBits(v: any): bigint {
+    if (v == null) return 0n;
+    try { return typeof v === "bigint" ? v : BigInt(v); } catch { return 0n; }
+}
+
+export function hasBits(bits: any, flag: any): boolean {
+    if (flag == null) return false;
+    const b = parseBits(bits);
+    const f = parseBits(flag);
+    return (b & f) === f;
+}
+
+export function roleColorHex(role: any): string | null {
+    return role?.colorString ?? (role?.color > 0 ? `#${role.color.toString(16).padStart(6, "0")}` : null);
+}
+
+export function parsePermissionOverwrites(v: any): any[] {
+    return v ? Object.values(v) : [];
+}
+
 export const PERMISSION_CATEGORIES: { name: string; permissions: string[] }[] = [
     {
         name: "General",
@@ -55,8 +77,8 @@ export const PERMISSION_CATEGORIES: { name: string; permissions: string[] }[] = 
 
 const CHANNEL_CATEGORIES = new Set(["Text", "Voice", "Channel", "Roles", "Expressions", "Misc"]);
 export const OVERWRITE_PERMISSIONS = PERMISSION_CATEGORIES
-    .filter((c) => CHANNEL_CATEGORIES.has(c.name))
-    .flatMap((c) => c.permissions);
+    .filter(c => CHANNEL_CATEGORIES.has(c.name))
+    .flatMap(c => c.permissions);
 
 export function hexToRgba(hex: string, alpha: number): string {
     const r = parseInt(hex.slice(1, 3), 16);
@@ -66,12 +88,12 @@ export function hexToRgba(hex: string, alpha: number): string {
 }
 
 export function formatPermName(name: string): string {
-    const bit = constants?.Permissions?.[name];
+    const bit = PERMISSIONS[name];
     if (bit != null && getPermName) {
         try {
             const localized = getPermName(bit);
             if (localized) return localized;
         } catch {}
     }
-    return name.split("_").map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
+    return name.split("_").map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
 }

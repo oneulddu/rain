@@ -1,11 +1,12 @@
 import { before } from "@api/patcher";
-import { findByName, findByStoreName } from "@metro";
+import { findByName } from "@metro";
+import { StickersStore } from "@metro/common/stores";
 
 import { rainenhancementsSettings } from "../../storage";
 
 // heavily based off the godsent work of: https://github.com/Vendicated/Vencord/blob/575421f4d06fe6cda9c1cb3227060a20cd1c700f/src/plugins/fakeNitro/index.tsx
 
-const { getStickerById } = findByStoreName("StickersStore");
+const { getStickerById } = StickersStore;
 const RowManager = findByName("RowManager");
 
 const staticStickerRegex = /https:\/\/(?:media|cdn)\.discordapp\.(?:net|com)\/stickers\/(\d+)\.(?!gif)\w+/;
@@ -14,6 +15,7 @@ const attachmentGifRegex = /https:\/\/media\.discordapp\.net\/attachments\/\d+\/
 
 function makeStickerItem(id: string, format: number) {
     const sticker = getStickerById(id);
+    if (!sticker) return [];
     return [{
         id,
         format_type: sticker?.format_type ?? format, // fallback
@@ -31,12 +33,9 @@ export default [
         let match = msg.content.match(animatedGifRegex);
         if (match) msg.stickerItems = makeStickerItem(match[1], 4);
         else if ((match = msg.content.match(attachmentGifRegex))) msg.stickerItems = makeStickerItem(match[1], 2);
-        else if ((match = msg.content.match(staticStickerRegex))) {
-            if (!getStickerById(match[1])) return; // fixes patching actual attachments
-            msg.stickerItems = makeStickerItem(match[1], 1);
-        }
+        else if ((match = msg.content.match(staticStickerRegex))) msg.stickerItems = makeStickerItem(match[1], 1);
 
-        if (match) {
+        if (match && msg.stickerItems.length > 0) {
             msg.content = "";
             msg.embeds = [];
         }

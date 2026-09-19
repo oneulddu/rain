@@ -1,27 +1,20 @@
+import { rawColors, semanticColors } from "@api/ui/components/color";
+import { hideSheet } from "@api/ui/sheets";
+import { findByNameLazy } from "@metro";
+import { ActionSheet, Text } from "@metro/common/components";
+import { ChannelStore, GuildMemberStore, GuildRoleStore, UserStore } from "@metro/common/stores";
 import React from "react";
 import { Image, Pressable, ScrollView, View } from "react-native";
 
-import { hideSheet } from "@api/ui/sheets";
-import { findByNameLazy, findByProps, findByStoreName } from "@metro";
-import { constants } from "@metro/common";
-import { ActionSheet, Text } from "@metro/common/components";
-import { rawColors, semanticColors } from "@api/ui/components/color";
-import { formatPermName, hexToRgba, OVERWRITE_PERMISSIONS } from "../lib/permissions";
+import { formatPermName, hasBits, hexToRgba, OVERWRITE_PERMISSIONS, parsePermissionOverwrites, PERMISSIONS, roleColorHex } from "../lib/permissions";
+import SheetHeader from "./SheetHeader";
 
-const { ActionSheetCloseButton } = findByProps("ActionSheetCloseButton") ?? {};
 const showUserProfile = findByNameLazy("showUserProfileActionSheet");
-const ChannelStore = findByStoreName("ChannelStore");
-const GuildRoleStore = findByStoreName("GuildRoleStore");
-const GuildMemberStore = findByStoreName("GuildMemberStore");
-const UserStore = findByStoreName("UserStore");
 
-function getPermsFromOverwrite(ow: any, Perms: Record<string, any>) {
-    const allow = typeof ow.allow === "bigint" ? ow.allow : BigInt(ow.allow ?? "0");
-    const deny = typeof ow.deny === "bigint" ? ow.deny : BigInt(ow.deny ?? "0");
-    return {
-        allowed: OVERWRITE_PERMISSIONS.filter((p) => (allow & (Perms[p] ?? 0n)) !== 0n),
-        denied: OVERWRITE_PERMISSIONS.filter((p) => (deny & (Perms[p] ?? 0n)) !== 0n),
-    };
+function getPermsFromOverwrite(ow: any) {
+    const allowed = OVERWRITE_PERMISSIONS.filter(p => hasBits(ow.allow, PERMISSIONS[p]));
+    const denied = OVERWRITE_PERMISSIONS.filter(p => hasBits(ow.deny, PERMISSIONS[p]));
+    return { allowed, denied };
 }
 
 export default function ChannelPermsView({ channelId }: { channelId: string }) {
@@ -31,12 +24,7 @@ export default function ChannelPermsView({ channelId }: { channelId: string }) {
     if (!guildId) {
         return (
             <ActionSheet>
-                <View style={{ flexDirection: "row", alignItems: "center", paddingVertical: 12, paddingHorizontal: 16 }}>
-                    <Text variant="heading-md/semibold" style={{ flex: 1, textAlign: "center" }}>{channel.name}</Text>
-                    {ActionSheetCloseButton ? <ActionSheetCloseButton onPress={() => hideSheet("permissionviewer-channel-" + channelId)} /> : (
-                        <Text variant="text-md/semibold" style={{ color: rawColors.BRAND_500 }} onPress={() => hideSheet("permissionviewer-channel-" + channelId)}>Close</Text>
-                    )}
-                </View>
+                <SheetHeader title={channel.name} onClose={() => hideSheet("permissionviewer-channel-" + channelId)} />
                 <View style={{ padding: 16, alignItems: "center" }}>
                     <Text variant="text-md/medium">Channel is not in a server</Text>
                 </View>
@@ -44,28 +32,18 @@ export default function ChannelPermsView({ channelId }: { channelId: string }) {
         );
     }
 
-    const roles = GuildRoleStore?.getSortedRoles?.(guildId) ?? [];
-    const roleList = Array.from(roles);
+    const roles: any[] = GuildRoleStore?.getSortedRoles?.(guildId) ?? [];
     const roleMap: Record<string, any> = {};
-    for (const r of roleList) roleMap[r.id] = r;
+    for (const r of roles) roleMap[r.id] = r;
 
-    const overwrites: any[] = Array.isArray(channel.permissionOverwrites)
-        ? channel.permissionOverwrites
-        : channel.permissionOverwrites ? Object.values(channel.permissionOverwrites) : [];
-
-    const Perms = constants?.Permissions ?? {};
+    const overwrites: any[] = parsePermissionOverwrites(channel.permissionOverwrites);
 
     const roleOverwrites = overwrites.filter((ow: any) => ow.type === 0);
     const memberOverwrites = overwrites.filter((ow: any) => ow.type === 1);
 
     return (
         <ActionSheet>
-            <View style={{ flexDirection: "row", alignItems: "center", paddingVertical: 12, paddingHorizontal: 16 }}>
-                <Text variant="heading-md/semibold" style={{ flex: 1, textAlign: "center" }}>#{channel.name}</Text>
-                {ActionSheetCloseButton ? <ActionSheetCloseButton onPress={() => hideSheet("permissionviewer-channel-" + channelId)} /> : (
-                    <Text variant="text-md/semibold" style={{ color: rawColors.BRAND_500 }} onPress={() => hideSheet("permissionviewer-channel-" + channelId)}>Close</Text>
-                )}
-            </View>
+            <SheetHeader title={`#${channel.name}`} onClose={() => hideSheet("permissionviewer-channel-" + channelId)} />
             <ScrollView style={{ flex: 1 }}>
                 {roleOverwrites.length === 0 && memberOverwrites.length === 0 && (
                     <View style={{ padding: 16, alignItems: "center" }}>
@@ -83,14 +61,14 @@ export default function ChannelPermsView({ channelId }: { channelId: string }) {
                         {roleOverwrites.map((ow: any) => {
                             const role = roleMap[ow.id];
                             const name = role?.name ?? "Unknown role";
-                            const color = role?.color > 0 ? `#${role.color.toString(16).padStart(6, "0")}` : null;
-                            const { allowed, denied } = getPermsFromOverwrite(ow, Perms);
+                            const color = roleColorHex(role);
+                            const { allowed, denied } = getPermsFromOverwrite(ow);
                             return (
                                 <View key={ow.id} style={{ paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: semanticColors.BACKGROUND_MODIFIER_ACCENT }}>
                                     <Text variant="text-md/semibold" style={color ? { color } : {}}>{name}</Text>
                                     {allowed.length > 0 && (
                                         <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 4 }}>
-                                            {allowed.map((p) => (
+                                            {allowed.map(p => (
                                                 <View key={p} style={{ backgroundColor: hexToRgba(rawColors.GREEN_360, 0.15), borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, marginRight: 4, marginBottom: 4 }}>
                                                     <Text variant="text-xs/medium" style={{ color: rawColors.GREEN_360 }}>{formatPermName(p)}</Text>
                                                 </View>
@@ -99,7 +77,7 @@ export default function ChannelPermsView({ channelId }: { channelId: string }) {
                                     )}
                                     {denied.length > 0 && (
                                         <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 4 }}>
-                                            {denied.map((p) => (
+                                            {denied.map(p => (
                                                 <View key={p} style={{ backgroundColor: hexToRgba(rawColors.RED_400, 0.15), borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, marginRight: 4, marginBottom: 4 }}>
                                                     <Text variant="text-xs/medium" style={{ color: rawColors.RED_400 }}>{formatPermName(p)}</Text>
                                                 </View>
@@ -125,7 +103,7 @@ export default function ChannelPermsView({ channelId }: { channelId: string }) {
                             const user = member?.user ?? UserStore?.getUser?.(userId);
                             const name = member?.nick ?? user?.globalName ?? user?.username ?? `User ${userId.slice(0, 6)}`;
                             const avatarUrl = user?.getAvatarURL?.(true, 64) ?? `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(userId) >> 22n) % 6n)}.png`;
-                            const { allowed, denied } = getPermsFromOverwrite(ow, Perms);
+                            const { allowed, denied } = getPermsFromOverwrite(ow);
                             return (
                                 <Pressable key={ow.id} onPress={() => showUserProfile?.({ userId: ow.id })} style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 0.5, borderBottomColor: semanticColors.BACKGROUND_MODIFIER_ACCENT, backgroundColor: pressed ? semanticColors.BACKGROUND_MODIFIER_HOVER : "transparent" })}>
                                     <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
@@ -134,7 +112,7 @@ export default function ChannelPermsView({ channelId }: { channelId: string }) {
                                     </View>
                                     {allowed.length > 0 && (
                                         <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 4 }}>
-                                            {allowed.map((p) => (
+                                            {allowed.map(p => (
                                                 <View key={p} style={{ backgroundColor: hexToRgba(rawColors.GREEN_360, 0.15), borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, marginRight: 4, marginBottom: 4 }}>
                                                     <Text variant="text-xs/medium" style={{ color: rawColors.GREEN_360 }}>{formatPermName(p)}</Text>
                                                 </View>
@@ -143,7 +121,7 @@ export default function ChannelPermsView({ channelId }: { channelId: string }) {
                                     )}
                                     {denied.length > 0 && (
                                         <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 4 }}>
-                                            {denied.map((p) => (
+                                            {denied.map(p => (
                                                 <View key={p} style={{ backgroundColor: hexToRgba(rawColors.RED_400, 0.15), borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, marginRight: 4, marginBottom: 4 }}>
                                                     <Text variant="text-xs/medium" style={{ color: rawColors.RED_400 }}>{formatPermName(p)}</Text>
                                                 </View>
