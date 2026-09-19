@@ -1,16 +1,15 @@
 import { after } from "@api/patcher";
-import { findByName, findByStoreName } from "@metro";
+import { findByName } from "@metro";
 import { ReactNative } from "@metro/common";
+import { ChannelStore, GuildStore } from "@metro/common/stores";
 import chroma from "chroma-js";
 
-import getTag, { BUILT_IN_TAGS } from "../lib/getTag";
+import getTag, { getBuiltInTags } from "../lib/getTag";
 
 const getTagProperties = findByName("getTagProperties", false);
-const GuildStore = findByStoreName("GuildStore");
-const ChannelStore = findByStoreName("ChannelStore");
 
 export default () => after("default", getTagProperties, ([{ message }], ret) => {
-    if (!BUILT_IN_TAGS.includes(ret.tagText)) {
+    if (!getBuiltInTags().includes(ret.tagText)) {
         const channel = ChannelStore.getChannel(message.channel_id);
         const guild = GuildStore.getGuild(channel?.guild_id);
 

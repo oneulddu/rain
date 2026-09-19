@@ -11,7 +11,7 @@ import { Button, Card, IconButton, Stack, Text } from "@metro/common/components"
 import { FontDefinition, selectFont, useFonts } from "@plugins/_core/painter/fonts";
 import { CardWrapper } from "@rain/pages/Addon/AddonCard";
 import { useEffect, useMemo, useState } from "react";
-import { PixelRatio, Platform,View } from "react-native";
+import { PixelRatio,View } from "react-native";
 
 import FontEditor from "./FontEditor";
 import previewHtml from "./preview.html";
@@ -40,11 +40,9 @@ function FontPreview({ font }: { font: FontDefinition; }) {
     const fontFamily = fontFamilyList!.split(/,/g)[0];
 
     useEffect(() => {
-        if (Platform.OS === "android") {
-            const webViewModule = findByProps("WebView");
-            if (webViewModule?.WebView) {
-                setWebView(() => webViewModule.WebView);
-            }
+        const webViewModule = findByProps("WebView");
+        if (webViewModule?.WebView) {
+            setWebView(() => webViewModule.WebView);
         }
     }, []);
 
@@ -83,7 +81,7 @@ function FontPreview({ font }: { font: FontDefinition; }) {
         text: Strings.PREVIEW_TEXT,
     }), [fontUri, fontSize, TEXT_DEFAULT]);
 
-    if (Platform.OS === "android" && isReady && WebView) {
+    if (isReady && WebView) {
         return (
             <View style={{ width: "100%", height: 32 }}>
                 <WebView
@@ -108,7 +106,7 @@ function FontPreview({ font }: { font: FontDefinition; }) {
                 )}
             </View>
         );
-    } else if (Platform.OS === "android" && !isReady) {
+    } else if (!isReady) {
         return (
             <View style={{ width: "100%", height: 32 }}>
                 <View style={[styles.full, { justifyContent: "center", alignItems: "center" }]}>
@@ -119,7 +117,6 @@ function FontPreview({ font }: { font: FontDefinition; }) {
             </View>
         );
     } else {
-        // todo: fix ios fonts (they dont have skia either)
         return (
             <View style={{ width: "100%", height: 32 }}>
                 <View style={[styles.full, { justifyContent: "center", alignItems: "center" }]}>

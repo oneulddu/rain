@@ -1,6 +1,7 @@
 import { after } from "@api/patcher";
 import { findByNameLazy, findByProps, findByPropsLazy, findByStoreName, findByTypeDisplayName } from "@metro";
 import { ReactNative } from "@metro/common";
+import { ChannelStore, SelectedChannelStore, UserStore } from "@metro/common/stores";
 import { definePlugin } from "@plugins";
 import { Contributors } from "@rain/Developers";
 import React, { useEffect, useRef } from "react";
@@ -19,11 +20,9 @@ const avatarCollapse = new Animated.Value(0);
 
 const Avatar = findByPropsLazy("default", "AvatarSizes", "getStatusSize")?.default;
 
-const UserStore = findByStoreName("UserStore");
-const SelectedChannelStore = findByStoreName("SelectedChannelStore");
-const ChannelStore = findByStoreName("ChannelStore");
 const SelfPresenceStore = findByStoreName("SelfPresenceStore");
 const showUserProfileActionSheet = findByNameLazy("showUserProfileActionSheet");
+const ProfileNavigation = findByPropsLazy("getRootNavigationRef");
 const showYouAccountActionSheetByProp = findByPropsLazy("showYouAccountActionSheet");
 
 function AvatarAction() {
@@ -60,7 +59,7 @@ function AvatarAction() {
         const fn = showYouAccountActionSheetByProp?.showYouAccountActionSheet;
         if (typeof fn === "function") {
             try {
-                fn(true, true);
+                fn(false, true);
                 return;
             } catch (err) {
             }
@@ -71,7 +70,7 @@ function AvatarAction() {
     const handlePress = () => {
         switch (settings.pressAction) {
             case "profile":
-                showUserProfileActionSheet?.({ userId: self.id, channelId: channel?.id ?? channelId });
+                ProfileNavigation.getRootNavigationRef()?.navigate("you");
                 break;
             case "server":
                 openAccountSheet();
@@ -84,7 +83,7 @@ function AvatarAction() {
     const handleLongPress = () => {
         switch (settings.longPressAction) {
             case "profile":
-                showUserProfileActionSheet?.({ userId: self.id, channelId: channel?.id ?? channelId });
+                ProfileNavigation.getRootNavigationRef()?.navigate("you");
                 break;
             case "server":
                 openAccountSheet();

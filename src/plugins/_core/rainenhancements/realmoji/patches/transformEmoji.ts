@@ -1,10 +1,11 @@
 import { after, before } from "@api/patcher";
-import { findByName, findByStoreName } from "@metro";
+import { findByName } from "@metro";
+import { EmojiStore } from "@metro/common/stores";
 
 import { rainenhancementsSettings } from "../../storage";
 import { Embed, Message } from "../def";
 
-const { getCustomEmojiById } = findByStoreName("EmojiStore");
+const { getCustomEmojiById } = EmojiStore;
 const RowManager = findByName("RowManager");
 const emojiRegex = /https:\/\/cdn.discordapp.com\/emojis\/(\d+)\.\w+/;
 
@@ -12,19 +13,10 @@ export default [
     before("generate", RowManager.prototype, ([data]) => {
         if (data.rowType !== 1 || !rainenhancementsSettings.transformEmoji) return;
 
-        let content = data.message.content as string;
+        const content = data.message.content as string;
         if (!content?.length) return;
-        const matchIndex = content.match(emojiRegex)?.index;
-        if (matchIndex === undefined) return;
-        const emojis = content.slice(matchIndex).trim().split("\n");
-        if (!emojis.every(s => s.match(emojiRegex))) return;
-        content = content.slice(0, matchIndex).replace(/\n/g, " ");
-
-        while (content.indexOf("  ") !== -1)
-            content = content.replace("  ", ` ${emojis.shift()} `);
-
-        content = content.trim();
-        if (emojis.length) content += ` ${emojis.join(" ")}`;
+        // Parse complete Markdown links before replacing their rendered nodes.
+        if (!emojiRegex.test(content)) return;
 
         const embeds = data.message.embeds as Embed[];
         for (let i = 0; i < embeds.length; i++) {
@@ -33,7 +25,6 @@ export default [
                 embeds.splice(i--, 1);
         }
 
-        data.message.content = content;
         data.message.__rainenhancements = true;
     }),
     after("generate", RowManager.prototype, ([data], row) => {

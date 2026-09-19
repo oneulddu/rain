@@ -36,6 +36,10 @@ export const Developers = {
 } satisfies Record<string, developer>;
 
 export const Contributors = {
+    Rosie: {
+        name: "Rosie",
+        id: 1356936317501571214n,
+    },
     rico040: {
         name: "rico040",
         id: 619474349845643275n,
@@ -171,5 +175,13 @@ export const Contributors = {
     thororen: {
         name: "thororen",
         id: 848339671629299742n
+    },
+    benjii: {
+        name: "Benjii",
+        id: 463702169443368970n,
+    },
+    baxter: {
+        name: "baxter.zip",
+        id: 554042298053427211n,
     }
 } satisfies Record<string, developer>;
