@@ -3,6 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { transformSync } from "esbuild";
+import { cloneElement, createElement, isValidElement } from "react";
 
 function load(path, require, globals = {}) {
     const source = fs.readFileSync(new URL(path, import.meta.url), "utf8");
@@ -103,7 +104,9 @@ function inputFixture() {
     const settings = settingsFixture();
     let patchRender;
     const React = {
-        createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
+        createElement,
+        isValidElement,
+        cloneElement,
         useState: value => [value, () => {}],
         useEffect() {},
         useRef: value => ({ current: value }),
@@ -137,10 +140,52 @@ function inputFixture() {
         throw Error(id);
     }, { setTimeout: fn => timers.push(fn) });
     install();
-    const injected = patchRender([], { type: "OriginalInput" }).props.children[1];
-    const press = injected.type().props;
-    return { press, menus, actions, settings, flush: () => { while (timers.length) timers.shift()(); } };
+    const nativeChildren = [createElement("AttachButton", { key: "attach" })];
+    const nativeStyle = [{ flexDirection: "row", alignItems: "center" }, { alignSelf: "flex-end", marginBottom: 4 }];
+    const onLayout = () => {};
+    const original = createElement("NativeActionRow", {
+        key: "native-actions", ref: { current: null },
+        style: nativeStyle, onLayout, pointerEvents: "box-none",
+    }, nativeChildren);
+    const rendered = patchRender([], original);
+    const injected = rendered.props.children[1];
+    const slot = injected.type();
+    const press = slot.props.children.props;
+    return { press, slot, menus, actions, settings, original, rendered, patchRender, flush: () => { while (timers.length) timers.shift()(); } };
 }
+
+test("translation is inserted inside the native action row without replacing its layout or refs", () => {
+    const f = inputFixture();
+    assert.equal(f.rendered.type, f.original.type);
+    assert.equal(f.rendered.key, f.original.key);
+    assert.equal(f.rendered.props.ref, f.original.props.ref);
+    assert.equal(f.rendered.props.style, f.original.props.style);
+    assert.equal(f.rendered.props.onLayout, f.original.props.onLayout);
+    assert.equal(f.rendered.props.pointerEvents, "box-none");
+    assert.equal(f.rendered.props.children[0], f.original.props.children);
+    assert.equal(f.original.props.children.length, 1);
+    assert.equal(f.rendered.props.children[1].key, "chat-translator-input-action");
+});
+
+test("hidden actions stay hidden and repeated renders do not mutate or duplicate native children", () => {
+    const f = inputFixture();
+    assert.equal(f.patchRender([], null), null);
+    assert.equal(f.patchRender([], false), false);
+    const repeated = f.patchRender([], f.original);
+    assert.equal(repeated.props.children.length, 2);
+    assert.equal(repeated.props.children[0], f.original.props.children);
+    assert.equal(f.original.props.children.length, 1);
+});
+
+test("the translation button inherits the native row height instead of increasing the composer height", () => {
+    const f = inputFixture();
+    assert.equal(f.slot.props.style.alignSelf, "stretch");
+    assert.equal(f.slot.props.style.height, undefined);
+    const buttonStyle = f.press.style({ pressed: false });
+    assert.equal(buttonStyle.height, undefined);
+    assert.equal(buttonStyle.position, "absolute");
+    assert.deepEqual([buttonStyle.top, buttonStyle.bottom, buttonStyle.left, buttonStyle.right], [0, 0, 0, 0]);
+});
 
 test("long press opens four actions without toggling translation on release; the next tap still works", () => {
     const f = inputFixture();
