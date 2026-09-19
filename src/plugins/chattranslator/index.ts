@@ -1,15 +1,14 @@
 import { definePlugin } from "@plugins";
 import { Contributors } from "@rain/Developers";
-
-import patchChannelLongPressActionSheet from "./patches/ChannelLongPressActionSheet";
-import patchChatInputActions from "./patches/ChatInputActions";
-import patchMessageLongPressActionSheet from "./patches/MessageLongPressActionSheet";
-import patchReceivedMessages from "./patches/receivedMessages";
-import patchSendMessage from "./patches/sendMessage";
-import Settings from "./settings";
-import { revertAllTranslatedMessages, setChatTranslatorRuntimeActive } from "./state";
+import React from "react";
 
 const patches: (() => unknown)[] = [];
+
+function removePatches() {
+    for (const unpatch of patches.splice(0).reverse()) {
+        try { unpatch(); } catch (error) { console.error("[ChatTranslator] Cleanup failed", error); }
+    }
+}
 
 export default definePlugin({
     name: "ChatTranslator",
@@ -18,22 +17,30 @@ export default definePlugin({
     id: "chattranslator",
     version: "1.0.0",
     start() {
+        if (patches.length) return;
+        // Plugin discovery runs before Discord renders. Resolve its UI only on start.
+        const { setChatTranslatorRuntimeActive } = require("./state");
         setChatTranslatorRuntimeActive(true);
-        patches.push(
-            patchChannelLongPressActionSheet(),
-            patchChatInputActions(),
-            patchMessageLongPressActionSheet(),
-            patchReceivedMessages(),
-            patchSendMessage(),
-        );
+        try {
+            patches.push(require("./patches/ChannelLongPressActionSheet").default());
+            patches.push(require("./patches/ChatInputActions").default());
+            patches.push(require("./patches/MessageLongPressActionSheet").default());
+            patches.push(require("./patches/receivedMessages").default());
+            patches.push(require("./patches/sendMessage").default());
+        } catch (error) {
+            setChatTranslatorRuntimeActive(false);
+            removePatches();
+            throw error;
+        }
     },
     stop() {
-        revertAllTranslatedMessages();
+        const { revertAllTranslatedMessages, setChatTranslatorRuntimeActive } = require("./state");
         setChatTranslatorRuntimeActive(false);
-        for (const unpatch of patches) {
-            if (typeof unpatch === "function") unpatch();
+        try {
+            revertAllTranslatedMessages();
+        } finally {
+            removePatches();
         }
-        patches.length = 0;
     },
-    settings: Settings,
+    settings: () => React.createElement(require("./settings").default),
 });

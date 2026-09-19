@@ -1,4 +1,8 @@
 import type { Metro } from "@metro/types";
+
+import { bootStage } from "./bootDiagnostics";
+
+bootStage("01 bundle executing");
 const { instead } = require("sublimation");
 
 // @ts-ignore - window is defined later in the bundle, so we assign it early
@@ -9,14 +13,19 @@ async function initializeRain() {
         // Make 'freeze' and 'seal' do nothing
         Object.freeze = Object.seal = Object;
 
+        bootStage("03 metro cache starting");
         await require("@metro/internals/caches").initMetroCache();
+        bootStage("04 metro cache ready; importing Rain");
         await require(".").default();
+        bootStage("08 Rain initialized");
     } catch (e) {
+        bootStage("FAIL initializeRain", e);
         alert(e);
     }
 }
 
 if (typeof window.__r === "undefined") {
+    bootStage("02 waiting for Discord require");
     // Used for storing the current require function for the global.__r getter defined below
     let _requireFunc: any;
 
@@ -67,6 +76,7 @@ if (typeof window.__r === "undefined") {
     };
 
     const onceIndexRequired = (originalRequire: Metro.RequireFn) => {
+        bootStage("02 Discord entry intercepted");
         // We hold calls from the native side
         if (window.__fbBatchedBridge) {
             const batchedBridge = window.__fbBatchedBridge;
@@ -98,12 +108,16 @@ if (typeof window.__r === "undefined") {
 
             originalRequire(0);
             resumeDeferred();
+            bootStage("09 Discord resumed");
 
             const { initPlugins } = require(".");
-            setTimeout(() => initPlugins(), 0);
+            setTimeout(() => initPlugins().then(
+                () => bootStage("10 plugins started"),
+                error => bootStage("FAIL plugins", error),
+            ), 0);
         };
 
-        startDiscord();
+        startDiscord().catch(error => bootStage("FAIL startDiscord", error));
     };
 
     Object.defineProperties(globalThis, {
@@ -140,5 +154,6 @@ if (typeof window.__r === "undefined") {
         }
     });
 } else {
-    initializeRain();
+    bootStage("02 Discord require already present");
+    initializeRain().catch(error => bootStage("FAIL existing runtime", error));
 }
