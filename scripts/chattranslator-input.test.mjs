@@ -12,21 +12,10 @@ function load(path, require, globals = {}) {
     return module.exports;
 }
 
-function presenterFixture({ platform = "ios", native = true, nativeThrows = false } = {}) {
+function presenterFixture() {
     const sheets = [], calls = [], toasts = [];
     let discordSheet;
-    const ReactNative = {
-        Platform: { OS: platform },
-        Keyboard: { dismiss: () => calls.push("keyboard") },
-        ActionSheetIOS: native ? {
-            showActionSheetWithOptions: (options, select) => {
-                if (nativeThrows) throw Error("native presenter unavailable");
-                sheets.push({ options, select });
-            },
-        } : undefined,
-    };
     const { showInputOptions } = load("../src/plugins/chattranslator/patches/inputOptions.ts", id => {
-        if (id === "@metro/common") return { ReactNative };
         if (id === "@metro") return { findByProps: prop => prop === "showSimpleActionSheet"
             ? discordSheet : { hideActionSheet: key => calls.push(`hide:${key}`) } };
         if (id === "@api/assets") return { findAssetId: () => 1 };
@@ -40,32 +29,24 @@ function presenterFixture({ platform = "ios", native = true, nativeThrows = fals
     };
 }
 
-test("iOS opens an anchored native menu without Discord's internal presenter; cancel changes nothing", () => {
+test("the original Discord menu keeps its labels and subtitles and closes before running the selected action", () => {
     const f = presenterFixture();
-    const selected = [];
-    f.show(["Receive", "Send", "Once", "Settings"].map(label => ({ label, onPress: () => selected.push(label) })), 42);
-    assert.equal(f.sheets.length, 1);
-    const { options, select } = f.sheets[0];
-    assert.deepEqual(Array.from(options.options), ["Receive", "Send", "Once", "Settings", "Cancel"]);
-    assert.equal(options.anchor, 42);
-    assert.equal(options.cancelButtonIndex, 4);
-    select(4);
-    assert.deepEqual(selected, []);
-    for (let i = 0; i < 4; i++) select(i);
-    assert.deepEqual(selected, ["Receive", "Send", "Once", "Settings"]);
-});
-
-test("an unavailable native presenter falls back to Discord and closes only its own menu", () => {
-    const f = presenterFixture({ nativeThrows: true });
     f.enableDiscord();
-    f.show([{ label: "Receive", onPress: () => f.calls.push("receive") }]);
-    f.sheets[0].options[0].onPress();
-    assert.deepEqual(f.calls, ["keyboard", "hide:ChatTranslatorInputOptions", "receive"]);
-    assert.equal(f.toasts.length, 0);
+    f.show(["Receive", "Send", "Once", "Settings"].map(label => ({
+        label, subLabel: "Only changes this channel.", onPress: () => f.calls.push(label),
+    })));
+    assert.equal(f.sheets.length, 1);
+    const { options, header } = f.sheets[0];
+    assert.equal(header.title, "ChatTranslator");
+    assert.deepEqual(Array.from(options, option => option.label), ["Receive", "Send", "Once", "Settings"]);
+    assert.equal(options[0].subLabel, "Only changes this channel.");
+    assert.deepEqual(f.calls, []);
+    options[3].onPress();
+    assert.deepEqual(f.calls, ["hide:ChatTranslatorInputOptions", "Settings"]);
 });
 
-test("Android resolves the Discord presenter when opening, including after an earlier lookup failed", () => {
-    const f = presenterFixture({ platform: "android" });
+test("the Discord presenter is resolved when opening, including after an earlier lookup failed", () => {
+    const f = presenterFixture();
     f.show([]);
     assert.equal(f.toasts.length, 1);
     f.enableDiscord();
@@ -76,13 +57,18 @@ test("Android resolves the Discord presenter when opening, including after an ea
 });
 
 test("missing presenters report a failure instead of throwing out of the gesture handler", () => {
-    const f = presenterFixture({ native: false });
+    const f = presenterFixture();
     assert.doesNotThrow(() => f.show([]));
     assert.match(f.toasts[0], /Could not open ChatTranslator options/);
 });
 
-function inputFixture() {
-    const menus = [], actions = [], timers = [], navigation = [];
+function inputFixture({ rootAvailable = true } = {}) {
+    const menus = [], actions = [], timers = [], navigation = [], unhandledRoutes = [];
+    const navigator = { navigate: (route, params) => {
+        // Rain registers its page on the root; nested "main/settings" is unhandled.
+        if (route !== "RAIN_CUSTOM_PAGE") { unhandledRoutes.push(route); return; }
+        navigation.push({ route, params, rendered: params.render() });
+    } };
     let patchRender;
     const React = {
         createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -99,14 +85,14 @@ function inputFixture() {
         if (id === "@metro") return { findByTypeDisplayName: () => ({ default() {} }) };
         if (id === "@metro/wrappers") return {
             findByStoreName: () => selected,
-            findByPropsLazy: () => ({ getRootNavigationRef: () => ({ navigate: (...args) => navigation.push(args) }) }),
+            findByPropsLazy: () => ({ getRootNavigationRef: () => rootAvailable ? navigator : undefined }),
         };
         if (id === "@metro/common") return {
             React, ReactNative: { Image: "Image", Pressable: "Pressable", Text: "Text", View: "View" },
             FluxUtils: { useStateFromStores: (_stores, read) => read() },
-            NavigationNative: { useNavigation: () => ({}) },
+            NavigationNative: { useNavigation: () => navigator },
         };
-        if (id === "../settings") return { default() {} };
+        if (id === "../settings") return { __esModule: true, default: () => "ChatTranslator settings page" };
         if (id === "../storage") return { useChatTranslatorSettings: () => ({}) };
         if (id === "../state") return {
             isManualTranslateNextSendEnabled: () => false,
@@ -118,14 +104,14 @@ function inputFixture() {
             toggleReceivedAutoTranslateChannelState: channel => { actions.push(`received:${channel}`); return true; },
             toggleSentAutoTranslateChannelState: channel => { actions.push(`sent:${channel}`); return true; },
         };
-        if (id === "./inputOptions") return { showInputOptions: (options, anchor) => menus.push({ options, anchor }) };
+        if (id === "./inputOptions") return { showInputOptions: options => menus.push({ options }) };
         if (id === "./renderTarget") return { getRenderTarget };
         throw Error(id);
     }, { setTimeout: fn => timers.push(fn) });
     install();
     const injected = patchRender([], { type: "OriginalInput" }).props.children[1];
     const press = injected.type().props;
-    return { press, menus, actions, navigation, flush: () => { while (timers.length) timers.shift()(); } };
+    return { press, menus, actions, navigation, unhandledRoutes, flush: () => { while (timers.length) timers.shift()(); } };
 }
 
 test("long press opens four actions without toggling translation on release; the next tap still works", () => {
@@ -137,7 +123,6 @@ test("long press opens four actions without toggling translation on release; the
     f.press.onPress();
     assert.equal(f.menus.length, 1);
     assert.equal(f.menus[0].options.length, 4);
-    assert.equal(f.menus[0].anchor, 42);
     assert.deepEqual(f.actions, []);
     f.press.onPressIn();
     f.press.onPress();
@@ -150,6 +135,20 @@ test("each input option reaches its channel toggle, one-time translation, or set
     for (const option of f.menus[0].options) option.onPress();
     f.flush();
     assert.deepEqual(f.actions, ["received:channel-1", "sent:channel-1", "once"]);
-    assert.equal(f.navigation[0][0], "main");
-    assert.equal(f.navigation[0][1].params.screen, "RAIN_CUSTOM_PAGE");
+    assert.deepEqual(f.unhandledRoutes, []);
+    assert.equal(f.navigation.length, 1);
+    assert.equal(f.navigation[0].route, "RAIN_CUSTOM_PAGE");
+    assert.equal(f.navigation[0].params.title, "ChatTranslator");
+    assert.equal(f.navigation[0].rendered, "ChatTranslator settings page");
+});
+
+test("settings use the same registered route when only the current navigator is available", () => {
+    const f = inputFixture({ rootAvailable: false });
+    f.press.onLongPress();
+    f.menus[0].options[3].onPress();
+    assert.equal(f.navigation.length, 0);
+    f.flush();
+    assert.deepEqual(f.unhandledRoutes, []);
+    assert.equal(f.navigation.length, 1);
+    assert.equal(f.navigation[0].rendered, "ChatTranslator settings page");
 });

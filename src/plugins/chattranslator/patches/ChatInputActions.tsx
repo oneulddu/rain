@@ -88,13 +88,8 @@ function ChatTranslatorInputAction() {
             };
 
             if (rootNavigation?.navigate) {
-                rootNavigation.navigate("main", {
-                    screen: "settings",
-                    params: {
-                        screen: "RAIN_CUSTOM_PAGE",
-                        params: pageParams,
-                    },
-                });
+                // Rain registers this route on the root navigator (see wrapOnPress).
+                rootNavigation.navigate("RAIN_CUSTOM_PAGE", pageParams);
                 return;
             }
 
@@ -111,7 +106,7 @@ function ChatTranslatorInputAction() {
             showToast("Could not open ChatTranslator settings.", LanguageIcon);
         }, 120);
     };
-    const showOptions = (anchor?: number) => {
+    const showOptions = () => {
         const manualEnabled = isManualTranslateNextSendEnabled();
         const channelId = getSelectedChannelId();
         const channelReceivedEnabled = getReceivedAutoTranslateChannelState(channelId);
@@ -154,7 +149,7 @@ function ChatTranslatorInputAction() {
                 label: "Open ChatTranslator settings",
                 onPress: openSettingsPage,
             },
-        ], anchor);
+        ]);
     };
 
     return (
@@ -178,9 +173,9 @@ function ChatTranslatorInputAction() {
 
                 showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
             }}
-            onLongPress={event => {
+            onLongPress={() => {
                 ignoreNextPress.current = true;
-                showOptions(event.nativeEvent.target);
+                showOptions();
             }}
             style={({ pressed }: { pressed: boolean }) => ({
                 alignItems: "center",

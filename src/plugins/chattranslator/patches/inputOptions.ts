@@ -2,7 +2,6 @@ import { findAssetId } from "@api/assets";
 import { showToast } from "@api/ui/toasts";
 import { logger } from "@lib/utils/logger";
 import { findByProps } from "@metro";
-import { ReactNative } from "@metro/common";
 
 interface InputOption {
     label: string;
@@ -12,27 +11,7 @@ interface InputOption {
 
 const SHEET_KEY = "ChatTranslatorInputOptions";
 
-export function showInputOptions(options: InputOption[], anchor?: number) {
-    // The input accessory can outlive Discord's internal sheet implementation.
-    // Use the native presenter on iOS and resolve the Discord fallback on demand.
-    if (ReactNative.Platform.OS === "ios") {
-        try {
-            const sheet = ReactNative.ActionSheetIOS;
-            if (typeof sheet?.showActionSheetWithOptions === "function") {
-                ReactNative.Keyboard?.dismiss();
-                sheet.showActionSheetWithOptions({
-                    title: "ChatTranslator",
-                    options: [...options.map(option => option.label), "Cancel"],
-                    cancelButtonIndex: options.length,
-                    anchor,
-                }, index => options[index]?.onPress());
-                return;
-            }
-        } catch (error) {
-            logger.error("[ChatTranslator] Native options menu failed", error);
-        }
-    }
-
+export function showInputOptions(options: InputOption[]) {
     try {
         const sheet = findByProps("showSimpleActionSheet");
         if (typeof sheet?.showSimpleActionSheet !== "function") throw new Error("Options presenter unavailable");
