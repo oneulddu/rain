@@ -15,7 +15,7 @@ export default definePlugin({
     description: "Translate Discord messages on mobile with manual, received auto, and outgoing auto translation.",
     author: [Contributors.oneulffu],
     id: "chattranslator",
-    version: "1.0.5",
+    version: "1.0.6",
     start() {
         if (patches.length) return;
         // Plugin discovery runs before Discord renders. Resolve its UI only on start.

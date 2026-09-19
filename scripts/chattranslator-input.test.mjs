@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { transformSync } from "esbuild";
-import { cloneElement, createElement, isValidElement } from "react";
+import { cloneElement, createElement, Fragment, isValidElement } from "react";
 
 function load(path, require, globals = {}) {
     const source = fs.readFileSync(new URL(path, import.meta.url), "utf8");
@@ -99,7 +99,7 @@ function settingsFixture({ available = true, navigatorByName = true, pushThrows 
     return { open: openChatTranslatorSettings, pushed, errors, toasts, Navigator, Settings, CustomPageRenderer, popped: () => popped };
 }
 
-function inputFixture({ direction } = {}) {
+function inputFixture({ fragment = true } = {}) {
     const menus = [], actions = [], timers = [];
     const settings = settingsFixture();
     let patchRender;
@@ -107,6 +107,7 @@ function inputFixture({ direction } = {}) {
         createElement,
         isValidElement,
         cloneElement,
+        Fragment,
         useState: value => [value, () => {}],
         useEffect() {},
         useRef: value => ({ current: value }),
@@ -120,7 +121,8 @@ function inputFixture({ direction } = {}) {
         if (id === "@metro") return { findByTypeDisplayName: () => ({ default() {} }) };
         if (id === "@metro/wrappers") return { findByStoreName: () => selected };
         if (id === "@metro/common") return {
-            React, ReactNative: { Image: "Image", Pressable: "Pressable", Text: "Text", View: "View" },
+            React, ReactNative: { Image: "Image", Pressable: "Pressable", Text: "Text", View: "View",
+                StyleSheet: { flatten: style => Array.isArray(style) ? Object.assign({}, ...style.flat(Infinity)) : style } },
             FluxUtils: { useStateFromStores: (_stores, read) => read() },
         };
         if (id === "../settings/openSettings") return { openChatTranslatorSettings: settings.open };
@@ -141,55 +143,68 @@ function inputFixture({ direction } = {}) {
     }, { setTimeout: fn => timers.push(fn) });
     install();
     const nativeChildren = [createElement("AttachButton", { key: "attach" })];
-    // The real one-button container does not necessarily declare a row.
-    const nativeStyle = [{ ...(direction ? { flexDirection: direction } : {}), alignItems: "center" }, { alignSelf: "flex-end", marginBottom: 4 }];
+    // Captured on device: Fragment > View(row, center, gap:10) > ContextMenu.
+    const nativeStyle = [{ flexDirection: "row", alignItems: "center", gap: 10 }];
     const onLayout = () => {};
-    const original = createElement("NativeActionRow", {
+    const originalRow = createElement("View", {
         key: "native-actions", ref: { current: null },
         style: nativeStyle, onLayout, pointerEvents: "box-none",
     }, nativeChildren);
+    const original = fragment ? createElement(Fragment, null, originalRow) : originalRow;
     const rendered = patchRender([], original);
-    const injected = rendered.props.children[1];
+    const row = fragment ? rendered.props.children : rendered;
+    const injected = row.props.children[1];
     const slot = injected.type();
     const press = slot.props.children.props;
-    return { press, slot, menus, actions, settings, original, rendered, patchRender, flush: () => { while (timers.length) timers.shift()(); } };
+    return { press, slot, menus, actions, settings, original, originalRow, row, rendered, patchRender, flush: () => { while (timers.length) timers.shift()(); } };
 }
 
-test("translation keeps the native container, vertical layout and refs while adding a horizontal arrangement", () => {
+test("the device Fragment keeps translation inside the existing native row, with all native props unchanged", () => {
     const f = inputFixture();
-    assert.equal(f.rendered.type, f.original.type);
-    assert.equal(f.rendered.key, f.original.key);
-    assert.equal(f.rendered.props.ref, f.original.props.ref);
-    assert.equal(f.rendered.props.style[0], f.original.props.style);
-    assert.equal(f.rendered.props.onLayout, f.original.props.onLayout);
-    assert.equal(f.rendered.props.pointerEvents, "box-none");
-    assert.equal(f.rendered.props.children[0], f.original.props.children);
-    assert.equal(f.original.props.children.length, 1);
-    assert.equal(f.rendered.props.children[1].key, "chat-translator-input-action");
-});
-
-test("default-column and explicit-column native containers place translation beside the original action", () => {
-    for (const direction of [undefined, "column", "row"]) {
-        const f = inputFixture({ direction });
-        const resolved = Object.assign({}, ...f.rendered.props.style.flat(Infinity));
-        assert.equal(resolved.flexDirection, "row");
-        assert.equal(resolved.alignItems, "center");
-        assert.equal(resolved.alignSelf, "flex-end");
-        assert.equal(resolved.marginBottom, 4);
-        assert.equal(resolved.height, undefined);
-        assert.equal(resolved.paddingTop, undefined);
-        assert.equal(resolved.paddingBottom, undefined);
+    assert.equal(f.rendered.type, Fragment);
+    assert.equal(f.rendered.props.style, undefined);
+    assert.equal(f.row.type, "View");
+    assert.equal(f.row.key, f.originalRow.key);
+    for (const key of ["ref", "style", "onLayout", "pointerEvents"]) {
+        assert.equal(f.row.props[key], f.originalRow.props[key]);
     }
+    assert.equal(f.row.props.children[0], f.originalRow.props.children);
+    assert.equal(f.originalRow.props.children.length, 1);
+    assert.equal(f.row.props.children[1].key, "chat-translator-input-action");
+    assert.equal(f.slot.props.style.marginLeft, undefined, "use the native gap, without an extra margin");
 });
 
-test("hidden actions stay hidden and repeated renders do not mutate or duplicate native children", () => {
+test("a direct native row also preserves its original style", () => {
+    const f = inputFixture({ fragment: false });
+    assert.equal(f.rendered.props.style, f.original.props.style);
+    assert.equal(f.rendered.props.children.length, 2);
+});
+
+test("nested Fragments preserve sibling elements and inject only into the first native row", () => {
     const f = inputFixture();
-    assert.equal(f.patchRender([], null), null);
-    assert.equal(f.patchRender([], false), false);
+    const sibling = createElement("OtherComponent", { key: "sibling" });
+    const tree = createElement(Fragment, null, sibling, createElement(Fragment, null, f.originalRow), f.originalRow);
+    const result = f.patchRender([], tree);
+    assert.equal(result.props.children[0], sibling);
+    assert.equal(result.props.children[1].props.children.props.children.length, 2);
+    assert.equal(result.props.children[2], f.originalRow);
+});
+
+test("unknown layouts are left untouched instead of appending outside the native row", () => {
+    const f = inputFixture();
+    for (const node of [null, false,
+        createElement("View", { style: { flexDirection: "column" } }, "unchanged"),
+        createElement("Composite", { style: { flexDirection: "row" } }, "unchanged"),
+        createElement(Fragment, null, createElement("Unknown")),
+    ]) assert.equal(f.patchRender([], node), node);
+});
+
+test("repeated renders do not mutate or duplicate native children", () => {
+    const f = inputFixture();
     const repeated = f.patchRender([], f.original);
-    assert.equal(repeated.props.children.length, 2);
-    assert.equal(repeated.props.children[0], f.original.props.children);
-    assert.equal(f.original.props.children.length, 1);
+    assert.equal(repeated.props.children.props.children.length, 2);
+    assert.equal(repeated.props.children.props.children[0], f.originalRow.props.children);
+    assert.equal(f.originalRow.props.children.length, 1);
 });
 
 test("the translation button inherits the native row height instead of increasing the composer height", () => {

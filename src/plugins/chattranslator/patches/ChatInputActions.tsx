@@ -24,7 +24,7 @@ import { showInputOptions } from "./inputOptions";
 import { getRenderTarget } from "./renderTarget";
 
 const LanguageIcon = findAssetId("LanguageIcon");
-const { Image, Pressable, Text, View } = ReactNative;
+const { Image, Pressable, StyleSheet, Text, View } = ReactNative;
 const SelectedChannelStore = findByStoreName("SelectedChannelStore");
 
 function getSelectedChannelId(): string | undefined {
@@ -127,7 +127,7 @@ function ChatTranslatorInputAction() {
     };
 
     return (
-        <View style={{ alignSelf: "stretch", marginLeft: 4, width: 40 }}>
+        <View style={{ alignSelf: "stretch", width: 40 }}>
             <Pressable
                 accessibilityLabel="ChatTranslator"
                 accessibilityRole="button"
@@ -216,16 +216,30 @@ export default function patchChatInputActions() {
     if (!renderTarget) return () => false;
 
     return after(renderTarget.key, renderTarget.target, (_, ret) => {
-        if (!React.isValidElement(ret)) return ret;
+        // Discord returns a Fragment containing the native action row. A Fragment
+        // cannot lay out children, so append inside that row without changing it.
+        let inserted = false;
+        function insertIntoRow(node: ReactNode): ReactNode {
+            if (inserted) return node;
+            if (Array.isArray(node)) return node.map(insertIntoRow);
+            if (!React.isValidElement(node)) return node;
 
-        // Keep Discord's size, margins and ref, but explicitly arrange the two
-        // actions horizontally: its original one-button container may be a column.
-        const { children, style } = ret.props as { children?: ReactNode; style?: StyleProp<ViewStyle> };
-        return React.cloneElement(
-            ret as ReactElement<{ style?: StyleProp<ViewStyle> }>,
-            { style: [style, { flexDirection: "row", alignItems: "center" }] },
-            children,
-            React.createElement(ChatTranslatorInputAction, { key: "chat-translator-input-action" }),
-        );
+            const element = node as ReactElement<{ children?: ReactNode; style?: StyleProp<ViewStyle> }>;
+            if (element.type === React.Fragment) {
+                const children = insertIntoRow(element.props.children);
+                return inserted ? React.cloneElement(element, null, children) : node;
+            }
+            if (element.type !== View || StyleSheet.flatten(element.props.style)?.flexDirection !== "row") return node;
+
+            inserted = true;
+            return React.cloneElement(
+                element,
+                null,
+                element.props.children,
+                React.createElement(ChatTranslatorInputAction, { key: "chat-translator-input-action" }),
+            );
+        }
+
+        return insertIntoRow(ret);
     });
 }
