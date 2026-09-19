@@ -33,6 +33,7 @@ import {
     setReceivedOutputLanguageForChannel,
     toggleReceivedAutoTranslateChannelState,
 } from "../utils";
+import { getRenderTarget } from "./renderTarget";
 
 const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
 const ActionSheetRow = findByProps("ActionSheetRow")?.ActionSheetRow;
@@ -155,16 +156,22 @@ function showMoreOptions({ authorId, channelId, guildId }: {
 export default function patchMessageLongPressActionSheet() {
     if (!LazyActionSheet?.openLazy || !ActionSheetRow) return () => false;
 
-    return before("openLazy", LazyActionSheet, ([component, key, msg]) => {
+    let active = true;
+    const sheetPatches = new Set<() => unknown>();
+    const removeOpenPatch = before("openLazy", LazyActionSheet, ([component, key, msg]) => {
         if (key !== "MessageLongPressActionSheet") return;
 
         const message = msg?.message;
         if (!message?.id) return;
 
-        component.then((instance: any) => {
-            const unpatch = after("default", instance, (_, res) => {
+        Promise.resolve(component).then((instance: any) => {
+            if (!active) return;
+            const renderTarget = getRenderTarget(instance);
+            if (!renderTarget) return;
+            const unpatch = after(renderTarget.key, renderTarget.target, (_, res) => {
                 React.useEffect(() => () => {
                     unpatch();
+                    sheetPatches.delete(unpatch);
                 }, []);
 
                 const buttons = findInReactTree(
@@ -256,6 +263,13 @@ export default function patchMessageLongPressActionSheet() {
 
                 buttons.unshift(...chatTranslatorRows);
             });
-        });
+            sheetPatches.add(unpatch);
+        }).catch(error => logger.error("[ChatTranslator] Message menu patch failed", error));
     });
+    return () => {
+        active = false;
+        removeOpenPatch();
+        for (const unpatch of sheetPatches) unpatch();
+        sheetPatches.clear();
+    };
 }

@@ -51,6 +51,7 @@ const config = {
     },
     define: {
         window: "globalThis",
+        __RAIN_DIAGNOSTICS__: JSON.stringify(!!args.diagnostic),
         __DEV__: JSON.stringify(releaseBranch !== "main")
     },
     inject: ["./shims/asyncIteratorSymbol.js", "./shims/promiseAllSettled.js"],

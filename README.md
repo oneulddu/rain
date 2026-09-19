@@ -23,6 +23,29 @@
 
 - **[rainTweak](https://codeberg.org/raincord/RainTweak/releases/latest)**
 
+## Custom builds
+
+Build the regular bundle without startup diagnostic popups:
+
+```sh
+bun install --frozen-lockfile
+bun run build --release-branch=main --build-bytecode
+```
+
+The output is `dist/rain.js` and `dist/rain.98.hbc` with the pinned Hermes compiler.
+Use a direct download URL for the complete bundle in RainTweak's custom bundle setting.
+Keep the bytecode version compatible with the installed Discord runtime.
+On an ARM64 Linux build host, provide a compatible `hermesc` on `PATH`
+(the bundled Linux compiler is x86-64) and verify that HBC generation succeeds.
+
+Startup diagnostics are opt-in: add `--diagnostic` only when investigating a boot failure.
+A diagnostic build displays a startup report; rebuild without that flag before publishing
+normal bundles. Run the focused checks with:
+
+```sh
+node --test scripts/boot-diagnostics.test.mjs scripts/chattranslator-compat.test.mjs
+```
+
 ## How can I support the project?
 
 rain can be supported in many ways, you can [contribute](#contributing), make a [bug report](#bug-reporting) or [donate](https://www.ko-fi.com/cocobo1)!

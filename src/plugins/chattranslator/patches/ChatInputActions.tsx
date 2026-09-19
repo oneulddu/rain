@@ -1,7 +1,7 @@
 import { findAssetId } from "@api/assets";
 import { after } from "@api/patcher";
 import { showToast } from "@api/ui/toasts";
-import { findByProps, findByTypeDisplayName } from "@metro";
+import { findByDisplayName, findByName, findByProps, findByTypeDisplayName } from "@metro";
 import { FluxUtils, NavigationNative, React, ReactNative } from "@metro/common";
 import { findByPropsLazy, findByStoreName } from "@metro/wrappers";
 
@@ -18,8 +18,8 @@ import {
     toggleReceivedAutoTranslateChannelState,
     toggleSentAutoTranslateChannelState,
 } from "../utils";
+import { getRenderTarget } from "./renderTarget";
 
-const ChatInputActions = findByTypeDisplayName("ChatInputActions");
 const LanguageIcon = findAssetId("LanguageIcon");
 const { Image, Pressable, Text, View } = ReactNative;
 const showSimpleActionSheet = findByProps("showSimpleActionSheet")?.showSimpleActionSheet;
@@ -256,9 +256,13 @@ function ChatTranslatorInputAction() {
 }
 
 export default function patchChatInputActions() {
-    if (!ChatInputActions?.type) return () => false;
+    const module = findByTypeDisplayName("ChatInputActions", false)
+        ?? findByDisplayName("ChatInputActions", false)
+        ?? findByName("ChatInputActions", false);
+    const renderTarget = getRenderTarget(module);
+    if (!renderTarget) return () => false;
 
-    return after("render", ChatInputActions.type, (_, ret) => React.createElement(
+    return after(renderTarget.key, renderTarget.target, (_, ret) => ret == null ? ret : React.createElement(
         View,
         { style: { alignItems: "center", flexDirection: "row" } },
         ret,

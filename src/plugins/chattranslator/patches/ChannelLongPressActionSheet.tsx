@@ -11,6 +11,7 @@ import {
     hasReceivedAutoTranslateChannelOverride,
     toggleReceivedAutoTranslateChannelState,
 } from "../utils";
+import { getRenderTarget } from "./renderTarget";
 
 const ChannelLongPressActionSheet = findByName("ChannelLongPressActionSheet", false);
 const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
@@ -96,13 +97,17 @@ export default function patchChannelServerLongPressActionSheets() {
         if (index !== -1) patches.splice(index, 1);
     };
 
-    if (ChannelLongPressActionSheet) {
-        patches.push(after("default", ChannelLongPressActionSheet, (_, ret) => {
+    const renderTarget = getRenderTarget(ChannelLongPressActionSheet);
+    if (renderTarget) {
+        patches.push(after(renderTarget.key, renderTarget.target, (_, ret) => {
             if (!ret || ret[PATCHED]) return;
 
             const channel = ret?.props?.channel as ChannelLike | undefined;
             const group = buildChannelGroup(channel ?? {});
             if (!group) return;
+
+            if (insertGroup(ret, group)) return;
+            if (typeof ret.type !== "function") return;
 
             let unpatchType: () => void = () => undefined;
             unpatchType = after("type", ret, (_, component) => {
