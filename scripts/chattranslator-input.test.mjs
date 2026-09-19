@@ -99,7 +99,7 @@ function settingsFixture({ available = true, navigatorByName = true, pushThrows 
     return { open: openChatTranslatorSettings, pushed, errors, toasts, Navigator, Settings, CustomPageRenderer, popped: () => popped };
 }
 
-function inputFixture({ fragment = true } = {}) {
+function inputFixture({ fragment = true, rowType = "View" } = {}) {
     const menus = [], actions = [], timers = [];
     const settings = settingsFixture();
     let patchRender;
@@ -146,7 +146,7 @@ function inputFixture({ fragment = true } = {}) {
     // Captured on device: Fragment > View(row, center, gap:10) > ContextMenu.
     const nativeStyle = [{ flexDirection: "row", alignItems: "center", gap: 10 }];
     const onLayout = () => {};
-    const originalRow = createElement("View", {
+    const originalRow = createElement(rowType, {
         key: "native-actions", ref: { current: null },
         style: nativeStyle, onLayout, pointerEvents: "box-none",
     }, nativeChildren);
@@ -154,6 +154,7 @@ function inputFixture({ fragment = true } = {}) {
     const rendered = patchRender([], original);
     const row = fragment ? rendered.props.children : rendered;
     const injected = row.props.children[1];
+    assert.ok(injected, "translation must be inserted into the action row");
     const slot = injected.type();
     const press = slot.props.children.props;
     return { press, slot, menus, actions, settings, original, originalRow, row, rendered, patchRender, flush: () => { while (timers.length) timers.shift()(); } };
@@ -172,6 +173,18 @@ test("the device Fragment keeps translation inside the existing native row, with
     assert.equal(f.originalRow.props.children.length, 1);
     assert.equal(f.row.props.children[1].key, "chat-translator-input-action");
     assert.equal(f.slot.props.style.marginLeft, undefined, "use the native gap, without an extra margin");
+});
+
+test("Discord's named View wrapper is recognized even when it differs from ReactNative.View", () => {
+    function View() { return null; }
+    function DiscordView() { return null; }
+    DiscordView.displayName = "View";
+    for (const rowType of [View, DiscordView]) {
+        const f = inputFixture({ rowType });
+        assert.equal(f.row.type, rowType);
+        assert.equal(f.row.props.style, f.originalRow.props.style);
+        assert.equal(f.row.props.children[1].key, "chat-translator-input-action");
+    }
 });
 
 test("a direct native row also preserves its original style", () => {

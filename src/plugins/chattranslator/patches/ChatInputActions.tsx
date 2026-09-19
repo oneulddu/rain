@@ -229,7 +229,10 @@ export default function patchChatInputActions() {
                 const children = insertIntoRow(element.props.children);
                 return inserted ? React.cloneElement(element, null, children) : node;
             }
-            if (element.type !== View || StyleSheet.flatten(element.props.style)?.flexDirection !== "row") return node;
+            // Discord also uses a named View wrapper, distinct from RN.View.
+            const type = element.type as { displayName?: string; name?: string };
+            const isView = element.type === View || type.displayName === "View" || type.name === "View";
+            if (!isView || StyleSheet.flatten(element.props.style)?.flexDirection !== "row") return node;
 
             inserted = true;
             return React.cloneElement(
