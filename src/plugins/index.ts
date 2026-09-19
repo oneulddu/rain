@@ -6,6 +6,7 @@ import { JSX } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { bootStage } from "../bootDiagnostics";
 import * as t from "./types";
 
 export const pluginInstances = new Map<string, t.rainPlugin>();
@@ -75,6 +76,7 @@ async function runPluginLifecycle(id: string, method: "start" | "eagerStart"): P
         await instance[method]?.();
         usePluginSettings.getState().updatePluginSetting(id, true);
     } catch (error) {
+        bootStage(`FAIL plugin ${id} ${method}`, error);
         const errorMsg = `[${id}] Failed: ${error}`;
         method === "start" ? showToast(errorMsg) : console.error(errorMsg, error);
         throw error;

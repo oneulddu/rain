@@ -51,6 +51,7 @@ const config = {
     },
     define: {
         window: "globalThis",
+        __RAIN_DIAGNOSTICS__: JSON.stringify(!!args.diagnostic),
         __DEV__: JSON.stringify(releaseBranch !== "main")
     },
     inject: ["./shims/asyncIteratorSymbol.js", "./shims/promiseAllSettled.js"],
@@ -79,9 +80,9 @@ const config = {
                                 constModules: {
                                     globals: {
                                         "rain-build-info": {
-                                            version: `"v0.9.5"`,
-                                            // idk why ios uses funny version names
-                                            supportedVersions: '["331014", "102199"]'
+                                            version: `"v0.10.0"`,
+                                            supportedVersionsAndroid: '344013',
+                                            supportedVersionsIOS: '110861'
                                         }
                                     }
                                 },
@@ -127,7 +128,7 @@ function findHermescPath() {
         "node_modules/hermes-compiler/hermesc/osx-bin/hermesc",
         "hermesc"
     ];
-    
+
     for (const hermescPath of possiblePaths) {
         try {
             execSync(`${hermescPath} --version`, { stdio: "pipe" });
@@ -136,18 +137,18 @@ function findHermescPath() {
             continue;
         }
     }
-    
+
     return null;
 }
 
 export async function getHermesBytecodeVersion() {
     const hermescPath = findHermescPath();
-    
+
     if (!hermescPath) {
         console.warn("hermesc not found, skipping bytecode compilation");
         return 0;
     }
-    
+
     try {
         const output = execSync(`${hermescPath} --version`, { encoding: "utf-8" });
         const match = output.match(/Bytecode version:\s*(\d+)/i);
@@ -162,12 +163,12 @@ export async function getHermesBytecodeVersion() {
 
 async function compileWithHermesc(inputPath, outputPath, options = {}) {
     const hermescPath = findHermescPath();
-    
+
     if (!hermescPath) {
         console.error("hermesc not found");
         return false;
     }
-    
+
     // i basically just searched up the best hermes compilation flags :P
     const flags = options.flags || [
         "-O",
@@ -181,7 +182,7 @@ async function compileWithHermesc(inputPath, outputPath, options = {}) {
 
     // -emit-binary and -out are here to stop idiots like me removing them :P
     const cmd = `${hermescPath} ${flags.join(" ")} -emit-binary -out ${outputPath} ${inputPath}`;
-    
+
     try {
         execSync(cmd, { encoding: "utf-8", stdio: "ignore", maxBuffer: 50 * 1024 * 1024 });
         return true;
@@ -195,41 +196,41 @@ async function compileWithHermesc(inputPath, outputPath, options = {}) {
 // bit of a stupid approach, but it works
 async function transformBigIntLiterals(jsPath) {
     let code = await fs.readFile(jsPath, "utf-8");
-    
+
     code = code.replace(/([=:(\[,\s])(\d+)n\b/g, '$1BigInt("$2")');
-    
+
     await fs.writeFile(jsPath, code, "utf-8");
 }
 
 export async function compileToBytecode(jsPath, customOutputPath = null) {
     const startTime = performance.now();
     const hbcVersion = await getHermesBytecodeVersion();
-    
+
     if (hbcVersion <= 0) {
         console.log("Skipping bytecode compilation (hermesc not available)");
         return null;
     }
 
     const hbcPath = customOutputPath || jsPath.replace(/\.js$/, `.${hbcVersion}.hbc`);
-    
+
     const tempPath = jsPath.replace(/\.js$/, `.temp.js`);
     await fs.copyFile(jsPath, tempPath);
-    
+
     try {
         await transformBigIntLiterals(tempPath);
-        
+
         const success = await compileWithHermesc(tempPath, hbcPath);
-        
+
         if (success) {
             var timeTook = performance.now() - startTime;
-            
+
             const jsStats = await fs.stat(jsPath);
             const hbcStats = await fs.stat(hbcPath);
             const reduction = ((1 - hbcStats.size / jsStats.size) * 100).toFixed(1);
-            
+
             return hbcPath;
         }
-        
+
         return null;
     } finally {
         try {
@@ -263,7 +264,7 @@ if (isThisFileBeingRunViaCLI) {
 
     const { timeTook } = await buildBundle();
     printBuildSuccess(context.hash, releaseBranch, timeTook);
-    
+
     availablePaths.push(config.outfile);
     const jsContent = await fs.readFile(config.outfile, "utf-8");
     hash.update(jsContent);
@@ -274,10 +275,10 @@ if (isThisFileBeingRunViaCLI) {
             minify: true,
             outfile: minOutfileForBytecode
         });
-        
+
         const hbcVersion = await getHermesBytecodeVersion();
         const hbcPath = config.outfile.replace(/\.js$/, `.${hbcVersion}.hbc`);
-        
+
         const startTime = performance.now();
         const bytecodePath = await compileToBytecode(minOutfileForBytecode, hbcPath);
         const hbcTimeTook = performance.now() - startTime;
@@ -289,7 +290,7 @@ if (isThisFileBeingRunViaCLI) {
         }
 
         printBytecodeBuildSuccess(context.hash, hbcVersion, hbcTimeTook);
-        
+
         await fs.unlink(minOutfileForBytecode);
     }
 
@@ -301,7 +302,7 @@ if (isThisFileBeingRunViaCLI) {
         });
 
         printBuildSuccess(context.hash, releaseBranch, minTimeTook, true);
-        
+
         availablePaths.push(minOutfile);
         const minJsContent = await fs.readFile(minOutfile, "utf-8");
         hash.update(minJsContent);
@@ -318,9 +319,9 @@ if (isThisFileBeingRunViaCLI) {
 
     const infoPath = "dist/info.json";
     const packageJson = JSON.parse(await fs.readFile("./package.json", "utf-8"));
-    
+
     const hbcVersion = await getHermesBytecodeVersion();
-    
+
     await fs.writeFile(
         infoPath,
         JSON.stringify(
@@ -335,7 +336,7 @@ if (isThisFileBeingRunViaCLI) {
             2
         )
     );
-    
+
     console.log(`\nAvailable paths: ${availablePaths.join(", ")}`);
     console.log(`Info file written to ${infoPath}`);
 }

@@ -1,399 +1,164 @@
-import { after, instead } from "@api/patcher";
-import { waitForHydration } from "@api/storage";
+import { after } from "@api/patcher";
 import { logger } from "@lib/utils/logger";
-import { ReactNative } from "@metro/common";
-import { findByProps, findByStoreName } from "@metro/wrappers";
+import { chatInput, constants, messageActions, MessageView, replyActions } from "@metro/common";
+import { ChannelStore, MessageStore, PermissionsStore, SelectedChannelStore, UserStore } from "@metro/common/stores";
+import { findByNameLazy,findByPropsLazy } from "@metro/wrappers";
 import { definePlugin } from "@plugins";
 import { Contributors } from "@rain/Developers";
+import React, { type ReactNode } from "react";
+import { Platform } from "react-native";
 
 import TapTapSettings from "./settings";
-import { taptapSettings, useTapTapSettings } from "./storage";
+import { taptapSettings } from "./storage";
+import type { MessageTapEvent, MessageViewProps } from "./types";
 
-type Unpatch = () => void;
+let unpatch: (() => unknown) | undefined;
+let active = false;
 
-let ChannelStore: any;
-let MessageStore: any;
-let UserStore: any;
-let Messages: any;
-let ReplyManager: any;
-let ChatInputRef: any;
-let MessagesHandlers: any;
-let getChatInputRef: any;
+const autocompleteUtils = findByPropsLazy("getMentionTextWithUser");
+const threadHooks = findByPropsLazy("computeIsReadOnlyThread");
+const showUserProfileActionSheet = findByNameLazy("showUserProfileActionSheet");
 
-let unpatchGetter: Unpatch | null = null;
-let unpatchHandlers: Unpatch | null = null;
-let currentTapIndex = 0;
-let currentMessageID: string | null = null;
-let timeoutTap: any = null;
-let handlerInstances = new WeakSet<any>();
-let patches: Unpatch[] = [];
+function getActiveChannelId(event: MessageTapEvent): string | null {
+    const { channelId } = event.nativeEvent;
 
-function resetTapState() {
-    try {
-        if (timeoutTap) {
-            clearTimeout(timeoutTap);
-            timeoutTap = null;
-        }
-        currentTapIndex = 0;
-        currentMessageID = null;
-    } catch (e) {
-        logger.error("TapTap: resetTapState error", e);
-    }
+    return channelId ?? SelectedChannelStore.getChannelId() ?? null;
 }
 
 function openKeyboard(channelId: string) {
     if (!taptapSettings.keyboardPopup) return;
-    try {
-        const ChatInputRef = getChatInputRef(channelId, 0);
-        if (ChatInputRef?.openSystemKeyboard) {
-            ChatInputRef?.openSystemKeyboard();
-            return;
-        }
-        const keyboardModule = findByProps(
-            "openSystemKeyboard",
-            "openSystemKeyboardForLastCreatedInput",
-        );
-        if (keyboardModule?.openSystemKeyboard) {
-            keyboardModule.openSystemKeyboard();
-            return;
-        }
-        if (keyboardModule?.openSystemKeyboardForLastCreatedInput) {
-            keyboardModule.openSystemKeyboardForLastCreatedInput();
-            return;
-        }
 
-        const ChatInput = ChatInputRef?.refs?.[0]?.current;
-        if (ChatInput?.focus) {
-            ChatInput.focus();
-            return;
-        }
-
-        // @ts-expect-error
-        if (ReactNative.Keyboard?.dismiss) {
-            setTimeout(() => {
-                if (ChatInput?.focus) ChatInput.focus();
-            }, 50);
-        }
-    } catch (e) {
-        if (taptapSettings.debugMode)
-            logger.error("TapTap: openKeyboard error", e);
-    }
+    chatInput.getChatInputRef(channelId, 0)?.openSystemKeyboard();
 }
 
-function doubleTapState(
-    state: "UNKNOWN" | "INCOMPLETE" | "COMPLETE",
-    nativeEvent?: any,
-) {
-    try {
-        if (taptapSettings.debugMode) {
-            logger.log("TapTap: DoubleTapState", { state, data: nativeEvent });
-        }
-    } catch (e) {
-        // ignore
-    }
+function canMentionInChannel(channel: { isPrivate: () => boolean }): boolean {
+    return channel.isPrivate() || PermissionsStore.can(constants.Permissions.SEND_MESSAGES, channel);
 }
 
-function patchHandlers(handlers: any) {
-    if (!handlers || handlerInstances.has(handlers)) return;
-    handlerInstances.add(handlers);
+function handleDoubleTap(event: MessageTapEvent) {
+    const channelId = getActiveChannelId(event);
 
-    try {
-        if (handlers.handleDoubleTapMessage) {
-            const un = instead(
-                "handleDoubleTapMessage",
-                handlers,
-                (args, orig) => {
-                    try {
-                        const evt = args?.[0]?.nativeEvent;
-                        if (!evt) return;
-                        const { channelId } = evt;
-                        const { messageId } = evt;
-                        if (!channelId || !messageId) return;
+    if (!channelId) return false;
 
-                        const channel = ChannelStore?.getChannel?.(channelId);
-                        const message = MessageStore?.getMessage?.(
-                            channelId,
-                            messageId,
-                        );
-                        if (!message) return;
+    const { messageId } = event.nativeEvent;
+    const message = MessageStore.getMessage(channelId, messageId);
 
-                        const currentUser = UserStore?.getCurrentUser?.();
-                        const isAuthor = !!(
-                            currentUser &&
-                            message.author &&
-                            message.author.id === currentUser.id
-                        );
+    if (!message) return false;
 
-                        if (isAuthor && taptapSettings.userEdit) {
-                            Messages?.startEditMessage?.(
-                                channelId,
-                                messageId,
-                                message.content ?? "",
-                            );
-                        } else if (taptapSettings.reply && channel) {
-                            ReplyManager?.createPendingReply?.({
-                                channel,
-                                message,
-                                shouldMention: true,
-                            });
-                        }
+    const isAuthor = message.author.id === UserStore.getCurrentUser()?.id;
 
-                        openKeyboard(channelId);
-                        return;
-                    } catch (e) {
-                        logger.error("TapTap: handleDoubleTapMessage error", e);
-                    }
-                },
-            );
-            patches.push(un);
-        }
-
-        if (handlers.handleTapUsername) {
-            const un = instead("handleTapUsername", handlers, (args, orig) => {
-                try {
-                    if (!taptapSettings.tapUsernameMention)
-                        return orig.apply(handlers, args);
-                    const evt = args?.[0]?.nativeEvent;
-                    if (!evt) return orig.apply(handlers, args);
-
-                    const ChatInput = ChatInputRef?.refs?.[0]?.current;
-                    const { messageId } = evt;
-                    const channelId = ChatInput?.props?.channel?.id;
-                    if (!channelId) return orig.apply(handlers, args);
-
-                    const message = MessageStore?.getMessage?.(
-                        channelId,
-                        messageId,
-                    );
-                    if (!message?.author) return orig.apply(handlers, args);
-
-                    const discr =
-                        message.author.discriminator !== "0"
-                            ? `#${message.author.discriminator}`
-                            : "";
-                    ChatInputRef?.insertText?.(
-                        `@${message.author.username}${discr}`,
-                    );
-                } catch (e) {
-                    logger.error("TapTap: handleTapUsername error", e);
-                    return orig.apply(handlers, args);
-                }
-            });
-            patches.push(un);
-        }
-
-        if (handlers.handleTapMessage) {
-            const un = after("handleTapMessage", handlers, args => {
-                try {
-                    const nativeEvent = args?.[0]?.nativeEvent;
-                    if (!nativeEvent) return;
-                    const { channelId } = nativeEvent;
-                    const { messageId } = nativeEvent;
-                    if (!channelId || !messageId) return;
-
-                    const channel = ChannelStore?.getChannel?.(channelId);
-                    const message = MessageStore?.getMessage?.(
-                        channelId,
-                        messageId,
-                    );
-                    if (!message) return;
-
-                    if (currentMessageID === messageId) currentTapIndex++;
-                    else {
-                        resetTapState();
-                        currentTapIndex = 1;
-                        currentMessageID = messageId;
-                    }
-
-                    let delayMs = 1000;
-                    const parsed = parseInt(taptapSettings.delay, 10);
-                    if (!Number.isNaN(parsed) && parsed >= 200)
-                        delayMs = parsed;
-
-                    if (timeoutTap) clearTimeout(timeoutTap);
-                    timeoutTap = setTimeout(() => resetTapState(), delayMs);
-
-                    const currentUser = UserStore?.getCurrentUser?.();
-                    const isAuthor = !!(
-                        currentUser &&
-                        message.author &&
-                        message.author.id === currentUser.id
-                    );
-
-                    const enriched = {
-                        ...nativeEvent,
-                        taps: currentTapIndex,
-                        content: message.content ?? "",
-                        authorId: message.author?.id,
-                        isAuthor,
-                    };
-
-                    if (currentTapIndex !== 2) {
-                        doubleTapState("INCOMPLETE", enriched);
-                        return;
-                    }
-
-                    const mid = currentMessageID;
-                    resetTapState();
-
-                    if (isAuthor) {
-                        if (taptapSettings.userEdit) {
-                            Messages?.startEditMessage?.(
-                                channelId,
-                                mid,
-                                enriched.content,
-                            );
-                        } else if (taptapSettings.reply && channel) {
-                            ReplyManager?.createPendingReply?.({
-                                channel,
-                                message,
-                                shouldMention: true,
-                            });
-                        }
-                    } else if (taptapSettings.reply && channel) {
-                        ReplyManager?.createPendingReply?.({
-                            channel,
-                            message,
-                            shouldMention: true,
-                        });
-                    }
-
-                    openKeyboard(channelId);
-                    doubleTapState("COMPLETE", enriched);
-                } catch (e) {
-                    logger.error("TapTap: handleTapMessage error", e);
-                    resetTapState();
-                }
-            });
-            patches.push(un);
-        }
-
-        unpatchHandlers = () => {
-            try {
-                patches.forEach(u => {
-                    try {
-                        u?.();
-                    } catch {}
-                });
-                patches = [];
-                handlerInstances = new WeakSet();
-            } catch (e) {
-                logger.error("TapTap: unpatchHandlers error", e);
-            }
-        };
-    } catch (e) {
-        logger.error("TapTap: patchHandlers error", e);
+    if (isAuthor && taptapSettings.userEdit) {
+        messageActions.startEditMessage(channelId, messageId, message.content);
+    } else if (taptapSettings.reply) {
+        replyActions.createPendingReply({ channel: ChannelStore.getChannel(channelId), message, shouldMention: true });
+    } else {
+        return false;
     }
+
+    openKeyboard(channelId);
+
+    if (taptapSettings.debugMode) logger.log("TapTap: native double-tap handled", { channelId, messageId, isAuthor });
+
+    return true;
 }
 
-function hookMessagesHandlersGetter() {
-    if (!MessagesHandlers?.prototype) return;
-    const propNames = [
-        "params",
-        "handlers",
-        "_params",
-        "messageHandlers",
-    ] as const;
-    let used: string | null = null;
-    let origGet: any = null;
+function handleTapUsername(event: MessageTapEvent) {
+    if (Platform.OS === "android" && !taptapSettings.openProfileOnTap) return false;
 
-    for (const name of propNames) {
-        const desc = Object.getOwnPropertyDescriptor(
-            MessagesHandlers.prototype,
-            name,
-        );
-        if (desc?.get) {
-            used = name;
-            origGet = desc.get;
-            logger.log(`TapTap: Found handlers getter '${name}'`);
-            break;
-        }
+    const channelId = getActiveChannelId(event);
+
+    if (!channelId) return false;
+
+    const { messageId, userId } = event.nativeEvent;
+
+    if (Platform.OS === "android") {
+        if (!userId) return false;
+
+        showUserProfileActionSheet?.({ userId, channelId });
+
+        return true;
     }
 
-    if (!used || !origGet) {
-        logger.error("TapTap: Could not find handlers getter");
-        return;
-    }
+    if (taptapSettings.tapUsernameAction !== "mention") return false;
 
-    Object.defineProperty(MessagesHandlers.prototype, used, {
-        configurable: true,
-        get: function () {
-            try {
-                if (this) patchHandlers(this);
-            } catch {}
-            return origGet.call(this);
-        },
-    });
+    const message = MessageStore.getMessage(channelId, messageId);
+    const input = chatInput.getChatInputRef(channelId, 0);
 
-    unpatchGetter = () => {
-        try {
-            Object.defineProperty(MessagesHandlers.prototype, used!, {
-                configurable: true,
-                get: origGet,
-            });
-        } catch (e) {
-            logger.error("TapTap: unpatchGetter error", e);
-        }
+    if (!input) return false;
+
+    const user = userId ? UserStore.getUser(userId) : message?.author;
+    const channel = ChannelStore.getChannel(channelId);
+
+    if (!user || !channel) return false;
+
+    if (!canMentionInChannel(channel) || threadHooks.computeIsReadOnlyThread(channel)) return false;
+
+    input.insertText(autocompleteUtils.getMentionTextWithUser(channel, user), null, true);
+
+    return true;
+}
+
+function wrapHandler(handler: (event: MessageTapEvent) => boolean, fallback: (event: MessageTapEvent) => void) {
+    return (event: MessageTapEvent) => {
+        if (active && handler(event)) return;
+
+        fallback(event);
     };
 }
 
-function resolveRuntimeModules() {
-    ChannelStore = findByStoreName("ChannelStore");
-    MessageStore = findByStoreName("MessageStore");
-    UserStore = findByStoreName("UserStore");
-    Messages = findByProps("sendMessage", "startEditMessage");
-    ReplyManager = findByProps("createPendingReply");
-    ChatInputRef = findByProps("insertText");
-    getChatInputRef = findByProps("getChatInputRef").getChatInputRef;
+function patchMessageView(element: ReactNode): ReactNode {
+    if (Array.isArray(element)) {
+        const children = element.map(patchMessageView);
 
-    const mhModule = findByProps("MessagesHandlers");
-    MessagesHandlers = mhModule?.MessagesHandlers ?? null;
+        return children.some((child, index) => child !== element[index]) ? children : element;
+    }
+
+    if (!React.isValidElement<MessageViewProps>(element)) return element;
+
+    const { props } = element;
+    const callbacks: Partial<MessageViewProps> = {};
+
+    if (typeof props.onDoubleTapMessage === "function") {
+        callbacks.onDoubleTapMessage = wrapHandler(handleDoubleTap, props.onDoubleTapMessage);
+    }
+
+    if (typeof props.onTapUsername === "function") {
+        callbacks.onTapUsername = wrapHandler(handleTapUsername, props.onTapUsername);
+    }
+
+    if (Object.keys(callbacks).length > 0) {
+        return React.cloneElement(element, callbacks);
+    }
+
+    const children = patchMessageView(props.children);
+
+    return children === props.children ? element : React.cloneElement(element, {}, children);
 }
 
 export default definePlugin({
     name: "TapTap",
     description: "Double-tap others to reply, Double-tap self to edit",
-    author: [Contributors.LampDelivery],
+    author: [Contributors.LampDelivery, Contributors.benjii],
     id: "taptap",
-    version: "1.0.0",
+    version: "1.0.1",
+
     async start() {
-        waitForHydration(useTapTapSettings);
+        if (unpatch) return;
 
-        resolveRuntimeModules();
-
-        if (!MessagesHandlers) {
-            logger.error("TapTap: MessagesHandlers not found; plugin inactive");
+        if (typeof MessageView.type.render !== "function") {
+            logger.error("TapTap: Messages render target is unavailable");
             return;
         }
 
-        const parsed = parseInt(taptapSettings.delay, 10);
-        if (Number.isNaN(parsed) || parsed < 150) {
-            taptapSettings.delay = "300";
-        }
+        // Native props already hold the callbacks; patch them before the view renders.
+        unpatch = after("render", MessageView.type, (_args, result) => patchMessageView(result as ReactNode));
+        active = true;
+    },
 
-        hookMessagesHandlersGetter();
-    },
     stop() {
-        resetTapState();
-        try {
-            unpatchGetter?.();
-        } catch {}
-        try {
-            unpatchHandlers?.();
-        } catch {}
-        if (timeoutTap) {
-            clearTimeout(timeoutTap);
-            timeoutTap = null;
-        }
-        patches.forEach(u => {
-            try {
-                u?.();
-            } catch {}
-        });
-        patches = [];
-        handlerInstances = new WeakSet();
+        active = false;
+        unpatch?.();
+        unpatch = undefined;
     },
-    settings() {
-        return TapTapSettings();
-    },
+    settings: TapTapSettings,
 });

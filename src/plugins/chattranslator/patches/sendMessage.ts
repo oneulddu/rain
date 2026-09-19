@@ -18,7 +18,6 @@ import {
     translate,
 } from "../utils";
 
-const Messages = findByProps("sendMessage", "receiveMessage");
 const LanguageIcon = findAssetId("LanguageIcon");
 
 function shouldSkipSentMessage(content: string): boolean {
@@ -41,6 +40,8 @@ function getOutgoingChannelId(args: any[], payload: any): string | undefined {
 }
 
 export default function patchSendMessage() {
+    const Messages = findByProps("sendMessage", "startEditMessage")
+        ?? findByProps("sendMessage", "receiveMessage");
     if (!Messages?.sendMessage) return () => false;
 
     return instead("sendMessage", Messages, async (args, original) => {

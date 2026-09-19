@@ -1,14 +1,15 @@
 import { after } from "@api/patcher";
-import { findByName, findByProps, findByStoreName } from "@metro";
+import { findByFilePath, findByName, findByProps } from "@metro";
 import { ReactNative } from "@metro/common";
+import { SelectedChannelStore, SelectedGuildStore } from "@metro/common/stores";
 
 const { Pressable } = findByProps("Button", "Text", "View");
 const ProfileBanner = findByName("ProfileBanner", false);
-const HeaderAvatar = findByName("HeaderAvatar", false);
+const HeaderAvatar = findByFilePath("modules/profile_customization/native/HeaderAvatar.tsx").default;
 const { openMediaModal } = findByProps("openMediaModal");
 const { hideActionSheet } = findByProps("hideActionSheet");
-const { getChannelId } = findByStoreName("SelectedChannelStore");
-const { getGuildId } = findByStoreName("SelectedGuildStore");
+const { getChannelId } = SelectedChannelStore;
+const { getGuildId } = SelectedGuildStore;
 
 function getImageSize(uri: string): Promise<{ width: number, height: number; }> {
     return new Promise((resolve, reject) => {
@@ -21,7 +22,11 @@ function getImageSize(uri: string): Promise<{ width: number, height: number; }> 
 }
 
 async function openModal(src: string, event: any) {
-    const { width, height } = await getImageSize(src);
+    let width = 0;
+    let height = 0;
+    try {
+        ({ width, height } = await getImageSize(src));
+    } catch {}
 
     hideActionSheet(); // hide user sheet
     openMediaModal({
@@ -34,7 +39,7 @@ async function openModal(src: string, event: any) {
             channelId: getChannelId(),
         }],
         initialIndex: 0,
-        originLayout: {
+        originViewOrOriginLayout: {
             width: 0, // this would ideally be the size of the small pfp but this proved very hard to implement
             height: 0,
             x: event.pageX,
@@ -45,7 +50,7 @@ async function openModal(src: string, event: any) {
 }
 
 export function unpatchAvatar() {
-    return after("default", HeaderAvatar, ([{ user, style, guildId }], res) => {
+    return after("render", HeaderAvatar, ([{ user, style, guildId }], res) => {
         let ext = "png";
         if (typeof user.guildMemberAvatars?.[guildId] === "string") {
             if (user.guildMemberAvatars?.[guildId].includes("a_")) { ext = "gif"; }
@@ -75,12 +80,11 @@ export function unpatchAvatar() {
 }
 
 export function unpatchBanner() {
-    return after("default", ProfileBanner, ([{ bannerSource }], res) => {
+    return after("default", ProfileBanner, ([bannerHeight], res) => {
+        const bannerSource = bannerHeight?.bannerSource;
         if (typeof bannerSource?.uri !== "string" || !res) return res;
 
-        const url = bannerSource.uri
-            .replace(/(?:\?size=\d{3,4})?$/, "?size=4096")
-            .replace(".webp", ".png");
+        const url = `${bannerSource.uri.split("?")[0]}?size=4096`;
 
         return React.createElement(
             Pressable,
