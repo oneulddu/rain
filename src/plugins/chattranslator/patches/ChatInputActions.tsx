@@ -2,10 +2,10 @@ import { findAssetId } from "@api/assets";
 import { after } from "@api/patcher";
 import { showToast } from "@api/ui/toasts";
 import { findByDisplayName, findByName, findByTypeDisplayName } from "@metro";
-import { FluxUtils, NavigationNative, React, ReactNative } from "@metro/common";
-import { findByPropsLazy, findByStoreName } from "@metro/wrappers";
+import { FluxUtils, React, ReactNative } from "@metro/common";
+import { findByStoreName } from "@metro/wrappers";
 
-import ChatTranslatorSettings from "../settings";
+import { openChatTranslatorSettings } from "../settings/openSettings";
 import {
     isManualTranslateNextSendEnabled,
     subscribeManualTranslateNextSend,
@@ -23,7 +23,6 @@ import { getRenderTarget } from "./renderTarget";
 
 const LanguageIcon = findAssetId("LanguageIcon");
 const { Image, Pressable, Text, View } = ReactNative;
-const rootNavigationRef = findByPropsLazy("getRootNavigationRef");
 const SelectedChannelStore = findByStoreName("SelectedChannelStore");
 
 function getSelectedChannelId(): string | undefined {
@@ -64,7 +63,6 @@ function useManualTranslateNextSend() {
 }
 
 function ChatTranslatorInputAction() {
-    const navigation = NavigationNative.useNavigation();
     const settings = useChatTranslatorSettings();
     const manualNextSend = useManualTranslateNextSend();
     const ignoreNextPress = React.useRef(false);
@@ -79,33 +77,7 @@ function ChatTranslatorInputAction() {
         ? (settings.sentChannelOverrides ?? {})[selectedChannelId] ?? settings.autoTranslate
         : settings.autoTranslate;
     const active = channelReceivedAuto || channelSentAuto || manualNextSend;
-    const openSettingsPage = () => {
-        setTimeout(() => {
-            const rootNavigation = rootNavigationRef?.getRootNavigationRef?.();
-            const pageParams = {
-                title: "ChatTranslator",
-                render: ChatTranslatorSettings,
-            };
-
-            if (rootNavigation?.navigate) {
-                // Rain registers this route on the root navigator (see wrapOnPress).
-                rootNavigation.navigate("RAIN_CUSTOM_PAGE", pageParams);
-                return;
-            }
-
-            if (navigation?.navigate) {
-                navigation.navigate("RAIN_CUSTOM_PAGE", pageParams);
-                return;
-            }
-
-            if (navigation?.push) {
-                navigation.push("RAIN_CUSTOM_PAGE", pageParams);
-                return;
-            }
-
-            showToast("Could not open ChatTranslator settings.", LanguageIcon);
-        }, 120);
-    };
+    const openSettingsPage = () => setTimeout(openChatTranslatorSettings, 120);
     const showOptions = () => {
         const manualEnabled = isManualTranslateNextSendEnabled();
         const channelId = getSelectedChannelId();

@@ -62,13 +62,45 @@ test("missing presenters report a failure instead of throwing out of the gesture
     assert.match(f.toasts[0], /Could not open ChatTranslator options/);
 });
 
-function inputFixture({ rootAvailable = true } = {}) {
-    const menus = [], actions = [], timers = [], navigation = [], unhandledRoutes = [];
-    const navigator = { navigate: (route, params) => {
-        // Rain registers its page on the root; nested "main/settings" is unhandled.
-        if (route !== "RAIN_CUSTOM_PAGE") { unhandledRoutes.push(route); return; }
-        navigation.push({ route, params, rendered: params.render() });
-    } };
+function settingsFixture({ available = true, navigatorByName = true, pushThrows = false } = {}) {
+    const pushed = [], errors = [], toasts = [];
+    let popped = 0;
+    const Navigator = () => null;
+    const Settings = () => "ChatTranslator settings page";
+    const CustomPageRenderer = () => "Nested settings page";
+    const React = { createElement: (type, props, ...children) => ({ type, props: { ...props, children } }) };
+    const navigation = {
+        push: component => {
+            assert.equal(typeof component, "function", "chat has no named settings routes");
+            if (pushThrows) throw Error("presentation failed");
+            pushed.push(component);
+        },
+        pop: () => popped++,
+    };
+    const { openChatTranslatorSettings } = load("../src/plugins/chattranslator/settings/openSettings.tsx", id => {
+        if (id === "@api/assets") return { findAssetId: () => 1 };
+        if (id === "@api/ui/toasts") return { showToast: message => toasts.push(message) };
+        if (id === "@lib/utils/logger") return { logger: { error: (...args) => errors.push(args) } };
+        if (id === "@metro/common") return { React };
+        if (id === "@plugins/_core/settings/patches/shared") return { CustomPageRenderer };
+        if (id === ".") return { __esModule: true, default: Settings };
+        if (id === "@metro") return {
+            findByName: name => navigatorByName && name === "Navigator" ? Navigator : undefined,
+            findByProps: (...props) => {
+                if (props[0] === "push") return available ? navigation : undefined;
+                if (props[0] === "Navigator") return { Navigator };
+                if (props[0] === "getRenderCloseButton") return { getRenderCloseButton: close => close };
+                throw Error(`Unexpected navigator lookup: ${props}`);
+            },
+        };
+        throw Error(id);
+    });
+    return { open: openChatTranslatorSettings, pushed, errors, toasts, Navigator, Settings, CustomPageRenderer, popped: () => popped };
+}
+
+function inputFixture() {
+    const menus = [], actions = [], timers = [];
+    const settings = settingsFixture();
     let patchRender;
     const React = {
         createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -83,16 +115,12 @@ function inputFixture({ rootAvailable = true } = {}) {
         if (id === "@api/patcher") return { after: (_key, _target, callback) => { patchRender = callback; return () => {}; } };
         if (id === "@api/ui/toasts") return { showToast() {} };
         if (id === "@metro") return { findByTypeDisplayName: () => ({ default() {} }) };
-        if (id === "@metro/wrappers") return {
-            findByStoreName: () => selected,
-            findByPropsLazy: () => ({ getRootNavigationRef: () => rootAvailable ? navigator : undefined }),
-        };
+        if (id === "@metro/wrappers") return { findByStoreName: () => selected };
         if (id === "@metro/common") return {
             React, ReactNative: { Image: "Image", Pressable: "Pressable", Text: "Text", View: "View" },
             FluxUtils: { useStateFromStores: (_stores, read) => read() },
-            NavigationNative: { useNavigation: () => navigator },
         };
-        if (id === "../settings") return { __esModule: true, default: () => "ChatTranslator settings page" };
+        if (id === "../settings/openSettings") return { openChatTranslatorSettings: settings.open };
         if (id === "../storage") return { useChatTranslatorSettings: () => ({}) };
         if (id === "../state") return {
             isManualTranslateNextSendEnabled: () => false,
@@ -111,7 +139,7 @@ function inputFixture({ rootAvailable = true } = {}) {
     install();
     const injected = patchRender([], { type: "OriginalInput" }).props.children[1];
     const press = injected.type().props;
-    return { press, menus, actions, navigation, unhandledRoutes, flush: () => { while (timers.length) timers.shift()(); } };
+    return { press, menus, actions, settings, flush: () => { while (timers.length) timers.shift()(); } };
 }
 
 test("long press opens four actions without toggling translation on release; the next tap still works", () => {
@@ -135,20 +163,42 @@ test("each input option reaches its channel toggle, one-time translation, or set
     for (const option of f.menus[0].options) option.onPress();
     f.flush();
     assert.deepEqual(f.actions, ["received:channel-1", "sent:channel-1", "once"]);
-    assert.deepEqual(f.unhandledRoutes, []);
-    assert.equal(f.navigation.length, 1);
-    assert.equal(f.navigation[0].route, "RAIN_CUSTOM_PAGE");
-    assert.equal(f.navigation[0].params.title, "ChatTranslator");
-    assert.equal(f.navigation[0].rendered, "ChatTranslator settings page");
+    assert.equal(f.settings.pushed.length, 1);
+    const navigator = f.settings.pushed[0]();
+    assert.equal(navigator.type, f.settings.Navigator);
+    const screen = navigator.props.screens[navigator.props.initialRouteName];
+    assert.equal(screen.title, "ChatTranslator");
+    assert.equal(screen.render().type, f.settings.Settings);
+    assert.equal(screen.render().type(), "ChatTranslator settings page");
 });
 
-test("settings use the same registered route when only the current navigator is available", () => {
-    const f = inputFixture({ rootAvailable: false });
+test("settings open from chat without named routes and register language subpages and a close action", () => {
+    const f = inputFixture();
     f.press.onLongPress();
     f.menus[0].options[3].onPress();
-    assert.equal(f.navigation.length, 0);
+    assert.equal(f.settings.pushed.length, 0);
     f.flush();
-    assert.deepEqual(f.unhandledRoutes, []);
-    assert.equal(f.navigation.length, 1);
-    assert.equal(f.navigation[0].rendered, "ChatTranslator settings page");
+    assert.equal(f.settings.pushed.length, 1);
+    const { screens, goBackOnBackPress } = f.settings.pushed[0]().props;
+    assert.equal(goBackOnBackPress, true);
+    assert.equal(screens.RAIN_CUSTOM_PAGE.render().type, f.settings.CustomPageRenderer);
+    screens.ChatTranslatorSettings.headerLeft();
+    assert.equal(f.settings.popped(), 1);
+});
+
+test("the settings navigator supports the property export used by other Discord builds", () => {
+    const f = settingsFixture({ navigatorByName: false });
+    f.open();
+    assert.equal(f.pushed.length, 1);
+    assert.equal(f.pushed[0]().type, f.Navigator);
+});
+
+test("settings presentation failures are visible instead of silently ignoring navigation", () => {
+    for (const config of [{ available: false }, { pushThrows: true }]) {
+        const f = settingsFixture(config);
+        assert.doesNotThrow(() => f.open());
+        assert.equal(f.pushed.length, 0);
+        assert.equal(f.errors.length, 1);
+        assert.match(f.toasts[0], /Could not open ChatTranslator settings/);
+    }
 });
