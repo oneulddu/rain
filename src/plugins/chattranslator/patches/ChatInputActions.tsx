@@ -1,7 +1,7 @@
 import { findAssetId } from "@api/assets";
 import { after } from "@api/patcher";
 import { showToast } from "@api/ui/toasts";
-import { findByDisplayName, findByName, findByProps, findByTypeDisplayName } from "@metro";
+import { findByDisplayName, findByName, findByTypeDisplayName } from "@metro";
 import { FluxUtils, NavigationNative, React, ReactNative } from "@metro/common";
 import { findByPropsLazy, findByStoreName } from "@metro/wrappers";
 
@@ -18,12 +18,11 @@ import {
     toggleReceivedAutoTranslateChannelState,
     toggleSentAutoTranslateChannelState,
 } from "../utils";
+import { showInputOptions } from "./inputOptions";
 import { getRenderTarget } from "./renderTarget";
 
 const LanguageIcon = findAssetId("LanguageIcon");
 const { Image, Pressable, Text, View } = ReactNative;
-const showSimpleActionSheet = findByProps("showSimpleActionSheet")?.showSimpleActionSheet;
-const hideActionSheet = findByProps("openLazy", "hideActionSheet")?.hideActionSheet;
 const rootNavigationRef = findByPropsLazy("getRootNavigationRef");
 const SelectedChannelStore = findByStoreName("SelectedChannelStore");
 
@@ -32,9 +31,8 @@ function getSelectedChannelId(): string | undefined {
         ?? SelectedChannelStore?.getCurrentlySelectedChannelId?.();
 }
 
-function showChannelUnavailableToast(shouldHideActionSheet = false) {
+function showChannelUnavailableToast() {
     showToast("Current channel is unavailable.", LanguageIcon);
-    if (shouldHideActionSheet) hideActionSheet?.();
 }
 
 function showReceivedAutoTranslateToast(enabled: boolean) {
@@ -82,8 +80,6 @@ function ChatTranslatorInputAction() {
         : settings.autoTranslate;
     const active = channelReceivedAuto || channelSentAuto || manualNextSend;
     const openSettingsPage = () => {
-        hideActionSheet?.();
-
         setTimeout(() => {
             const rootNavigation = rootNavigationRef?.getRootNavigationRef?.();
             const pageParams = {
@@ -115,67 +111,58 @@ function ChatTranslatorInputAction() {
             showToast("Could not open ChatTranslator settings.", LanguageIcon);
         }, 120);
     };
-    const showOptions = () => {
-        if (!showSimpleActionSheet) {
-            showToast("ChatTranslator options are not available on this Discord build.", LanguageIcon);
-            return;
-        }
-
+    const showOptions = (anchor?: number) => {
         const manualEnabled = isManualTranslateNextSendEnabled();
         const channelId = getSelectedChannelId();
         const channelReceivedEnabled = getReceivedAutoTranslateChannelState(channelId);
         const channelSentEnabled = getSentAutoTranslateChannelState(channelId);
 
-        showSimpleActionSheet({
-            key: "ChatTranslatorInputOptions",
-            header: { title: "ChatTranslator" },
-            options: [
-                {
-                    label: channelReceivedEnabled ? "Turn off received auto translate here" : "Turn on received auto translate here",
-                    subLabel: "Only changes this channel.",
-                    onPress: () => {
-                        if (!channelId) {
-                            showChannelUnavailableToast(true);
-                            return;
-                        }
+        showInputOptions([
+            {
+                label: channelReceivedEnabled ? "Turn off received auto translate here" : "Turn on received auto translate here",
+                subLabel: "Only changes this channel.",
+                onPress: () => {
+                    if (!channelId) {
+                        showChannelUnavailableToast();
+                        return;
+                    }
 
-                        showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
-                        hideActionSheet?.();
-                    },
+                    showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
                 },
-                {
-                    label: channelSentEnabled ? "Turn off outgoing auto translate here" : "Turn on outgoing auto translate here",
-                    subLabel: "Only changes this channel.",
-                    onPress: () => {
-                        if (!channelId) {
-                            showChannelUnavailableToast(true);
-                            return;
-                        }
+            },
+            {
+                label: channelSentEnabled ? "Turn off outgoing auto translate here" : "Turn on outgoing auto translate here",
+                subLabel: "Only changes this channel.",
+                onPress: () => {
+                    if (!channelId) {
+                        showChannelUnavailableToast();
+                        return;
+                    }
 
-                        showSentAutoTranslateToast(toggleSentAutoTranslateChannelState(channelId));
-                        hideActionSheet?.();
-                    },
+                    showSentAutoTranslateToast(toggleSentAutoTranslateChannelState(channelId));
                 },
-                {
-                    label: manualEnabled ? "Cancel one-time send translation" : "Translate next message once",
-                    onPress: () => {
-                        const next = toggleManualTranslateNextSend();
+            },
+            {
+                label: manualEnabled ? "Cancel one-time send translation" : "Translate next message once",
+                onPress: () => {
+                    const next = toggleManualTranslateNextSend();
 
-                        showToast(next ? "Next sent message will be translated" : "Manual send translation cancelled", LanguageIcon);
-                        hideActionSheet?.();
-                    },
+                    showToast(next ? "Next sent message will be translated" : "Manual send translation cancelled", LanguageIcon);
                 },
-                {
-                    label: "Open ChatTranslator settings",
-                    onPress: openSettingsPage,
-                },
-            ],
-        });
+            },
+            {
+                label: "Open ChatTranslator settings",
+                onPress: openSettingsPage,
+            },
+        ], anchor);
     };
 
     return (
         <Pressable
             accessibilityLabel="ChatTranslator"
+            accessibilityRole="button"
+            accessibilityHint="Long press for translation options"
+            onPressIn={() => { ignoreNextPress.current = false; }}
             onPress={() => {
                 if (ignoreNextPress.current) {
                     ignoreNextPress.current = false;
@@ -191,16 +178,9 @@ function ChatTranslatorInputAction() {
 
                 showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
             }}
-            onLongPress={() => {
+            onLongPress={event => {
                 ignoreNextPress.current = true;
-                showOptions();
-            }}
-            onPressOut={() => {
-                if (ignoreNextPress.current) {
-                    setTimeout(() => {
-                        ignoreNextPress.current = false;
-                    }, 0);
-                }
+                showOptions(event.nativeEvent.target);
             }}
             style={({ pressed }: { pressed: boolean }) => ({
                 alignItems: "center",
