@@ -43,7 +43,7 @@ A diagnostic build displays a startup report; rebuild without that flag before p
 normal bundles. Run the focused checks with:
 
 ```sh
-node --test scripts/boot-diagnostics.test.mjs scripts/chattranslator-compat.test.mjs
+node --test scripts/*.test.mjs
 ```
 
 ## How can I support the project?
