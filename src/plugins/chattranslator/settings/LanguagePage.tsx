@@ -6,7 +6,6 @@ import { ScrollView } from "react-native";
 import { getLanguageOptions } from "../lang";
 import { ChatTranslatorSettings, useChatTranslatorSettings } from "../storage";
 import {
-    getReceivedTranslationOptionsForChannel,
     setReceivedInputLanguageForChannel,
     setReceivedOutputLanguageForChannel,
 } from "../utils";
@@ -14,18 +13,22 @@ import {
 type LanguageSettingField = "receivedInput" | "receivedOutput" | "sentInput" | "sentOutput";
 
 export default function LanguagePage({ channelId, settingKey, includeAuto }: { channelId?: string; settingKey: LanguageSettingField; includeAuto: boolean }) {
-    const settings = useChatTranslatorSettings();
+    const service = useChatTranslatorSettings(state => state.service);
+    const value = useChatTranslatorSettings(state => {
+        if (channelId && settingKey === "receivedInput") {
+            return (state.receivedChannelInputOverrides ?? {})[channelId] ?? state.receivedInput;
+        }
+        if (channelId && settingKey === "receivedOutput") {
+            return (state.receivedChannelOutputOverrides ?? {})[channelId] ?? state.receivedOutput;
+        }
+
+        return (state[settingKey] as string) ?? (includeAuto ? "auto" : "en");
+    });
     const [query, setQuery] = React.useState("");
     const lowerQuery = query.toLowerCase();
-    const options = React.useMemo(() => getLanguageOptions(settings.service, includeAuto).filter(option => {
+    const options = React.useMemo(() => getLanguageOptions(service, includeAuto).filter(option => {
         return option.label.toLowerCase().includes(lowerQuery) || option.value.toLowerCase().includes(lowerQuery);
-    }), [includeAuto, lowerQuery, settings.service]);
-    const channelLanguages = channelId ? getReceivedTranslationOptionsForChannel(channelId) : null;
-    const value = channelLanguages && settingKey === "receivedInput"
-        ? channelLanguages.sourceLang
-        : channelLanguages && settingKey === "receivedOutput"
-            ? channelLanguages.targetLang
-            : (settings[settingKey] as string) ?? (includeAuto ? "auto" : "en");
+    }), [includeAuto, lowerQuery, service]);
 
     const updateLanguage = (value: string) => {
         if (channelId && settingKey === "receivedInput") {
@@ -38,7 +41,7 @@ export default function LanguagePage({ channelId, settingKey, includeAuto }: { c
             return;
         }
 
-        settings.updateSettings({ [settingKey]: value } as Partial<ChatTranslatorSettings>);
+        useChatTranslatorSettings.getState().updateSettings({ [settingKey]: value } as Partial<ChatTranslatorSettings>);
     };
 
     return (

@@ -1,11 +1,13 @@
 import { findAssetId } from "@api/assets";
 import { after } from "@api/patcher";
 import { showToast } from "@api/ui/toasts";
-import { findByDisplayName, findByName, findByProps, findByTypeDisplayName } from "@metro";
-import { FluxUtils, NavigationNative, React, ReactNative } from "@metro/common";
-import { findByPropsLazy, findByStoreName } from "@metro/wrappers";
+import { findByDisplayName, findByName, findByTypeDisplayName } from "@metro";
+import { FluxUtils, React, ReactNative } from "@metro/common";
+import { findByStoreName } from "@metro/wrappers";
+import type { ReactElement, ReactNode } from "react";
+import type { StyleProp, ViewStyle } from "react-native";
 
-import ChatTranslatorSettings from "../settings";
+import { openChatTranslatorSettings } from "../settings/openSettings";
 import {
     isManualTranslateNextSendEnabled,
     subscribeManualTranslateNextSend,
@@ -18,13 +20,11 @@ import {
     toggleReceivedAutoTranslateChannelState,
     toggleSentAutoTranslateChannelState,
 } from "../utils";
+import { showInputOptions } from "./inputOptions";
 import { getRenderTarget } from "./renderTarget";
 
 const LanguageIcon = findAssetId("LanguageIcon");
-const { Image, Pressable, Text, View } = ReactNative;
-const showSimpleActionSheet = findByProps("showSimpleActionSheet")?.showSimpleActionSheet;
-const hideActionSheet = findByProps("openLazy", "hideActionSheet")?.hideActionSheet;
-const rootNavigationRef = findByPropsLazy("getRootNavigationRef");
+const { Image, Pressable, StyleSheet, Text, View } = ReactNative;
 const SelectedChannelStore = findByStoreName("SelectedChannelStore");
 
 function getSelectedChannelId(): string | undefined {
@@ -32,9 +32,8 @@ function getSelectedChannelId(): string | undefined {
         ?? SelectedChannelStore?.getCurrentlySelectedChannelId?.();
 }
 
-function showChannelUnavailableToast(shouldHideActionSheet = false) {
+function showChannelUnavailableToast() {
     showToast("Current channel is unavailable.", LanguageIcon);
-    if (shouldHideActionSheet) hideActionSheet?.();
 }
 
 function showReceivedAutoTranslateToast(enabled: boolean) {
@@ -66,7 +65,6 @@ function useManualTranslateNextSend() {
 }
 
 function ChatTranslatorInputAction() {
-    const navigation = NavigationNative.useNavigation();
     const settings = useChatTranslatorSettings();
     const manualNextSend = useManualTranslateNextSend();
     const ignoreNextPress = React.useRef(false);
@@ -81,177 +79,132 @@ function ChatTranslatorInputAction() {
         ? (settings.sentChannelOverrides ?? {})[selectedChannelId] ?? settings.autoTranslate
         : settings.autoTranslate;
     const active = channelReceivedAuto || channelSentAuto || manualNextSend;
-    const openSettingsPage = () => {
-        hideActionSheet?.();
-
-        setTimeout(() => {
-            const rootNavigation = rootNavigationRef?.getRootNavigationRef?.();
-            const pageParams = {
-                title: "ChatTranslator",
-                render: ChatTranslatorSettings,
-            };
-
-            if (rootNavigation?.navigate) {
-                rootNavigation.navigate("main", {
-                    screen: "settings",
-                    params: {
-                        screen: "RAIN_CUSTOM_PAGE",
-                        params: pageParams,
-                    },
-                });
-                return;
-            }
-
-            if (navigation?.navigate) {
-                navigation.navigate("RAIN_CUSTOM_PAGE", pageParams);
-                return;
-            }
-
-            if (navigation?.push) {
-                navigation.push("RAIN_CUSTOM_PAGE", pageParams);
-                return;
-            }
-
-            showToast("Could not open ChatTranslator settings.", LanguageIcon);
-        }, 120);
-    };
+    const openSettingsPage = () => setTimeout(openChatTranslatorSettings, 120);
     const showOptions = () => {
-        if (!showSimpleActionSheet) {
-            showToast("ChatTranslator options are not available on this Discord build.", LanguageIcon);
-            return;
-        }
-
         const manualEnabled = isManualTranslateNextSendEnabled();
         const channelId = getSelectedChannelId();
         const channelReceivedEnabled = getReceivedAutoTranslateChannelState(channelId);
         const channelSentEnabled = getSentAutoTranslateChannelState(channelId);
 
-        showSimpleActionSheet({
-            key: "ChatTranslatorInputOptions",
-            header: { title: "ChatTranslator" },
-            options: [
-                {
-                    label: channelReceivedEnabled ? "Turn off received auto translate here" : "Turn on received auto translate here",
-                    subLabel: "Only changes this channel.",
-                    onPress: () => {
-                        if (!channelId) {
-                            showChannelUnavailableToast(true);
-                            return;
-                        }
+        showInputOptions([
+            {
+                label: channelReceivedEnabled ? "Turn off received auto translate here" : "Turn on received auto translate here",
+                subLabel: "Only changes this channel.",
+                onPress: () => {
+                    if (!channelId) {
+                        showChannelUnavailableToast();
+                        return;
+                    }
 
-                        showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
-                        hideActionSheet?.();
-                    },
+                    showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
                 },
-                {
-                    label: channelSentEnabled ? "Turn off outgoing auto translate here" : "Turn on outgoing auto translate here",
-                    subLabel: "Only changes this channel.",
-                    onPress: () => {
-                        if (!channelId) {
-                            showChannelUnavailableToast(true);
-                            return;
-                        }
+            },
+            {
+                label: channelSentEnabled ? "Turn off outgoing auto translate here" : "Turn on outgoing auto translate here",
+                subLabel: "Only changes this channel.",
+                onPress: () => {
+                    if (!channelId) {
+                        showChannelUnavailableToast();
+                        return;
+                    }
 
-                        showSentAutoTranslateToast(toggleSentAutoTranslateChannelState(channelId));
-                        hideActionSheet?.();
-                    },
+                    showSentAutoTranslateToast(toggleSentAutoTranslateChannelState(channelId));
                 },
-                {
-                    label: manualEnabled ? "Cancel one-time send translation" : "Translate next message once",
-                    onPress: () => {
-                        const next = toggleManualTranslateNextSend();
+            },
+            {
+                label: manualEnabled ? "Cancel one-time send translation" : "Translate next message once",
+                onPress: () => {
+                    const next = toggleManualTranslateNextSend();
 
-                        showToast(next ? "Next sent message will be translated" : "Manual send translation cancelled", LanguageIcon);
-                        hideActionSheet?.();
-                    },
+                    showToast(next ? "Next sent message will be translated" : "Manual send translation cancelled", LanguageIcon);
                 },
-                {
-                    label: "Open ChatTranslator settings",
-                    onPress: openSettingsPage,
-                },
-            ],
-        });
+            },
+            {
+                label: "Open ChatTranslator settings",
+                onPress: openSettingsPage,
+            },
+        ]);
     };
 
     return (
-        <Pressable
-            accessibilityLabel="ChatTranslator"
-            onPress={() => {
-                if (ignoreNextPress.current) {
-                    ignoreNextPress.current = false;
-                    return;
-                }
-
-                const channelId = getSelectedChannelId();
-
-                if (!channelId) {
-                    showChannelUnavailableToast();
-                    return;
-                }
-
-                showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
-            }}
-            onLongPress={() => {
-                ignoreNextPress.current = true;
-                showOptions();
-            }}
-            onPressOut={() => {
-                if (ignoreNextPress.current) {
-                    setTimeout(() => {
+        <View style={{ alignSelf: "stretch", width: 40 }}>
+            <Pressable
+                accessibilityLabel="ChatTranslator"
+                accessibilityRole="button"
+                accessibilityHint="Long press for translation options"
+                onPressIn={() => { ignoreNextPress.current = false; }}
+                onPress={() => {
+                    if (ignoreNextPress.current) {
                         ignoreNextPress.current = false;
-                    }, 0);
-                }
-            }}
-            style={({ pressed }: { pressed: boolean }) => ({
-                alignItems: "center",
-                height: 40,
-                justifyContent: "center",
-                marginLeft: 4,
-                opacity: pressed ? 0.6 : 1,
-                width: 40,
-            })}
-        >
-            <View
-                style={{
-                    alignItems: "center",
-                    backgroundColor: active ? "rgba(88, 101, 242, 0.2)" : "rgba(255, 255, 255, 0.08)",
-                    borderColor: manualNextSend ? "rgba(87, 242, 135, 0.9)" : active ? "rgba(88, 101, 242, 0.75)" : "rgba(255, 255, 255, 0.12)",
-                    borderRadius: 18,
-                    borderWidth: 1,
-                    height: 36,
-                    justifyContent: "center",
-                    width: 36,
+                        return;
+                    }
+
+                    const channelId = getSelectedChannelId();
+
+                    if (!channelId) {
+                        showChannelUnavailableToast();
+                        return;
+                    }
+
+                    showReceivedAutoTranslateToast(toggleReceivedAutoTranslateChannelState(channelId));
                 }}
+                onLongPress={() => {
+                    ignoreNextPress.current = true;
+                    showOptions();
+                }}
+                style={({ pressed }: { pressed: boolean }) => ({
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: pressed ? 0.6 : 1,
+                    position: "absolute",
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                })}
             >
-                <Image
-                    resizeMode="contain"
-                    source={LanguageIcon}
+                <View
                     style={{
-                        height: 20,
-                        opacity: active ? 1 : 0.72,
-                        tintColor: active ? "#5865f2" : "#b5bac1",
-                        width: 20,
+                        alignItems: "center",
+                        backgroundColor: active ? "rgba(88, 101, 242, 0.2)" : "rgba(255, 255, 255, 0.08)",
+                        borderColor: manualNextSend ? "rgba(87, 242, 135, 0.9)" : active ? "rgba(88, 101, 242, 0.75)" : "rgba(255, 255, 255, 0.12)",
+                        borderRadius: 18,
+                        borderWidth: 1,
+                        height: 36,
+                        justifyContent: "center",
+                        width: 36,
                     }}
-                />
-                {manualNextSend && (
-                    <View
+                >
+                    <Image
+                        resizeMode="contain"
+                        source={LanguageIcon}
                         style={{
-                            alignItems: "center",
-                            backgroundColor: "#57f287",
-                            borderRadius: 7,
-                            height: 14,
-                            justifyContent: "center",
-                            position: "absolute",
-                            right: -2,
-                            top: -2,
-                            width: 18,
+                            height: 20,
+                            opacity: active ? 1 : 0.72,
+                            tintColor: active ? "#5865f2" : "#b5bac1",
+                            width: 20,
                         }}
-                    >
-                        <Text style={{ color: "#111318", fontSize: 9, fontWeight: "700" }}>1x</Text>
-                    </View>
-                )}
-            </View>
-        </Pressable>
+                    />
+                    {manualNextSend && (
+                        <View
+                            style={{
+                                alignItems: "center",
+                                backgroundColor: "#57f287",
+                                borderRadius: 7,
+                                height: 14,
+                                justifyContent: "center",
+                                position: "absolute",
+                                right: -2,
+                                top: -2,
+                                width: 18,
+                            }}
+                        >
+                            <Text style={{ color: "#111318", fontSize: 9, fontWeight: "700" }}>1x</Text>
+                        </View>
+                    )}
+                </View>
+            </Pressable>
+        </View>
     );
 }
 
@@ -262,10 +215,34 @@ export default function patchChatInputActions() {
     const renderTarget = getRenderTarget(module);
     if (!renderTarget) return () => false;
 
-    return after(renderTarget.key, renderTarget.target, (_, ret) => ret == null ? ret : React.createElement(
-        View,
-        { style: { alignItems: "center", flexDirection: "row" } },
-        ret,
-        React.createElement(ChatTranslatorInputAction)
-    ));
+    return after(renderTarget.key, renderTarget.target, (_, ret) => {
+        // Discord returns a Fragment containing the native action row. A Fragment
+        // cannot lay out children, so append inside that row without changing it.
+        let inserted = false;
+        function insertIntoRow(node: ReactNode): ReactNode {
+            if (inserted) return node;
+            if (Array.isArray(node)) return node.map(insertIntoRow);
+            if (!React.isValidElement(node)) return node;
+
+            const element = node as ReactElement<{ children?: ReactNode; style?: StyleProp<ViewStyle> }>;
+            if (element.type === React.Fragment) {
+                const children = insertIntoRow(element.props.children);
+                return inserted ? React.cloneElement(element, null, children) : node;
+            }
+            // Discord also uses a named View wrapper, distinct from RN.View.
+            const type = element.type as { displayName?: string; name?: string };
+            const isView = element.type === View || type.displayName === "View" || type.name === "View";
+            if (!isView || StyleSheet.flatten(element.props.style)?.flexDirection !== "row") return node;
+
+            inserted = true;
+            return React.cloneElement(
+                element,
+                null,
+                element.props.children,
+                React.createElement(ChatTranslatorInputAction, { key: "chat-translator-input-action" }),
+            );
+        }
+
+        return insertIntoRow(ret);
+    });
 }

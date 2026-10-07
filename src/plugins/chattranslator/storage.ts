@@ -15,8 +15,8 @@ export interface PersistedTranslationCacheEntry {
     key: string;
     lastUsedAt: number;
     messageId?: string;
+    networkSignature: string;
     originalContent?: string;
-    requestSignature: string;
     sourceLang: string;
     targetLang: string;
     timestamp: number;
@@ -108,4 +108,8 @@ export const {
 
 export const {
     useStore: useChatTranslatorCacheStore,
-} = createPluginStore<ChatTranslatorCacheStorage>("chattranslator-cache", { entries: {} });
+} = createPluginStore<ChatTranslatorCacheStorage>(
+    "chattranslator-cache",
+    { entries: {} },
+    { emitSettingUpdated: false }
+);

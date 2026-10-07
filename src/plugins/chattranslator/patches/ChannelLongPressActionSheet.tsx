@@ -2,6 +2,7 @@ import { findAssetId } from "@api/assets";
 import { after } from "@api/patcher";
 import { showToast } from "@api/ui/toasts";
 import { findInReactTree } from "@lib/utils";
+import { logger } from "@lib/utils/logger";
 import { findByName, findByProps } from "@metro";
 import { ActionSheetRow } from "@metro/common/components";
 
@@ -17,6 +18,20 @@ const ChannelLongPressActionSheet = findByName("ChannelLongPressActionSheet", fa
 const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
 const ChannelIcon = findAssetId("ChannelIcon");
 const PATCHED = Symbol.for("ChatTranslator.ChannelServerLongPressActionSheets");
+const MAX_PENDING_CHANNEL_ACTION_SHEET_PATCHES = 4;
+
+function safelyUnpatch(unpatch: () => void): boolean {
+    try {
+        unpatch();
+        return true;
+    } catch (error) {
+        logger.warn(
+            "[ChatTranslator] Failed to remove a channel action-sheet patch:",
+            error instanceof Error ? error.name : "UnknownError"
+        );
+        return false;
+    }
+}
 
 interface ChannelLike {
     guild_id?: string;
@@ -92,40 +107,64 @@ function insertGroup(component: any, group: any): boolean {
 
 export default function patchChannelServerLongPressActionSheets() {
     const patches: (() => void)[] = [];
+    const pendingPatches = new Set<() => void>();
     const removePatch = (unpatch: () => void) => {
-        const index = patches.indexOf(unpatch);
-        if (index !== -1) patches.splice(index, 1);
+        pendingPatches.delete(unpatch);
     };
 
     const renderTarget = getRenderTarget(ChannelLongPressActionSheet);
     if (renderTarget) {
         patches.push(after(renderTarget.key, renderTarget.target, (_, ret) => {
-            if (!ret || ret[PATCHED]) return;
-
-            const channel = ret?.props?.channel as ChannelLike | undefined;
-            const group = buildChannelGroup(channel ?? {});
-            if (!group) return;
-
-            if (insertGroup(ret, group)) return;
-            if (typeof ret.type !== "function") return;
-
-            let unpatchType: () => void = () => undefined;
-            unpatchType = after("type", ret, (_, component) => {
-                if (insertGroup(component, group)) {
-                    unpatchType();
-                    removePatch(unpatchType);
-                }
-            });
-            patches.push(unpatchType);
             try {
-                ret[PATCHED] = true;
-            } catch {
-                // Keep the row-key guard above as the fallback duplicate protection.
+                if (!ret || ret[PATCHED]) return;
+
+                const channel = ret?.props?.channel as ChannelLike | undefined;
+                const group = buildChannelGroup(channel ?? {});
+                if (!group) return;
+                if (insertGroup(ret, group)) return;
+                if (typeof ret.type !== "function") return;
+
+                let unpatchType: () => void = () => undefined;
+                unpatchType = after("type", ret, (_, component) => {
+                    try {
+                        if (insertGroup(component, group) && safelyUnpatch(unpatchType)) {
+                            removePatch(unpatchType);
+                        }
+                    } catch (error) {
+                        logger.error(
+                            "[ChatTranslator] Failed to render channel action-sheet controls",
+                            error instanceof Error ? error.name : "UnknownError"
+                        );
+                        safelyUnpatch(unpatchType);
+                        removePatch(unpatchType);
+                    }
+                });
+                pendingPatches.add(unpatchType);
+                while (pendingPatches.size > MAX_PENDING_CHANNEL_ACTION_SHEET_PATCHES) {
+                    const oldest = pendingPatches.values().next();
+                    if (oldest.done) break;
+
+                    safelyUnpatch(oldest.value);
+                    pendingPatches.delete(oldest.value);
+                }
+                try {
+                    ret[PATCHED] = true;
+                } catch {
+                    // Keep the row-key guard above as the fallback duplicate protection.
+                }
+            } catch (error) {
+                logger.error(
+                    "[ChatTranslator] Failed to patch channel action-sheet controls",
+                    error instanceof Error ? error.name : "UnknownError"
+                );
             }
         }));
     }
 
     return () => {
-        for (const unpatch of patches) unpatch();
+        for (const unpatch of [...patches, ...pendingPatches]) {
+            safelyUnpatch(unpatch);
+        }
+        pendingPatches.clear();
     };
 }

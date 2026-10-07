@@ -11,9 +11,21 @@ import {
     normalizeChatTranslatorSettingsForService,
     normalizeLanguageForService,
 } from "./lang";
-import { TranslationService, useChatTranslatorSettings } from "./storage";
+import {
+    runAbortableTranslationRequest,
+    TranslationRequestCancelledError,
+    type TranslationRequestCompletionReporter,
+} from "./requests";
+import { ChatTranslatorSettings, TranslationService, useChatTranslatorSettings } from "./storage";
+import {
+    hasMeaningfulTextForTranslation,
+    prepareTextForTranslation,
+} from "./text";
+
+export { hasMeaningfulTextForTranslation } from "./text";
 
 export interface DiscordMessage {
+    __chatTranslator?: boolean;
     id?: string;
     channel_id?: string;
     channelId?: string;
@@ -36,6 +48,8 @@ export interface TranslationValue {
 
 export interface ReceivedTranslationOptions {
     ignoreConfidenceRequirement?: boolean;
+    reportRequestCompletion?: TranslationRequestCompletionReporter;
+    signal?: AbortSignal;
     sourceLang?: string;
     targetLang?: string;
 }
@@ -86,56 +100,41 @@ interface AzureTranslationResponseEntry {
 const ChannelStore = findByStoreName("ChannelStore");
 const LanguageIcon = findAssetId("LanguageIcon");
 const shownDeepLFallbackNotices = new Set<string>();
-const PRESERVED_TOKEN_PATTERN = /⟪RAIN_CHAT_TRANSLATOR_TOKEN_(\d+)⟫/g;
-const PRESERVED_SEGMENT_PATTERNS = [
-    /```[\s\S]*?```/g,
-    /`[^`\n]+`/g,
-    /https?:\/\/\S+/g,
-    /<a?:[A-Za-z0-9_~]+:\d+>/g,
-    /<@[!&]?\d+>/g,
-    /<#\d+>/g,
-    /<\/[^:>]+:\d+>/g,
-    /<t:\d+(?::[tTdDfFR])?>/g,
-] as const;
+const TRANSLATION_REQUEST_TIMEOUT_MS = 15000;
 
-interface PreservedTextState {
-    hasMeaningfulText: boolean;
-    restore: (text: string) => string;
-    text: string;
+async function fetchAndConsumeWithTimeout<T>(
+    input: RequestInfo | URL,
+    init: RequestInit,
+    externalSignal: AbortSignal | undefined,
+    consume: (response: Response, signal: AbortSignal) => Promise<T>,
+    reportCompletion?: TranslationRequestCompletionReporter
+): Promise<T> {
+    return runAbortableTranslationRequest(
+        externalSignal,
+        TRANSLATION_REQUEST_TIMEOUT_MS,
+        async signal => {
+            const response = await fetch(input, { ...init, signal });
+            return consume(response, signal);
+        },
+        reportCompletion
+    );
 }
 
-function timeoutSignal(ms: number): AbortSignal {
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), ms);
-    return controller.signal;
-}
-
-function prepareTextForTranslation(text: string): PreservedTextState {
-    const preservedValues: string[] = [];
-    let masked = text;
-
-    for (const pattern of PRESERVED_SEGMENT_PATTERNS) {
-        masked = masked.replace(pattern, match => {
-            const token = `⟪RAIN_CHAT_TRANSLATOR_TOKEN_${preservedValues.length}⟫`;
-            preservedValues.push(match);
-            return token;
-        });
+async function parseOptionalJson<T>(response: Response, signal: AbortSignal): Promise<T> {
+    try {
+        return await response.json() as T;
+    } catch (error) {
+        if (signal.aborted) throw new TranslationRequestCancelledError();
+        if (isTranslationAbortError(error)) throw error;
+        return {} as T;
     }
-
-    const strippedForDetection = masked.replace(PRESERVED_TOKEN_PATTERN, " ").trim();
-
-    return {
-        hasMeaningfulText: /[\p{L}\p{N}]/u.test(strippedForDetection),
-        restore: translatedText => translatedText.replace(
-            PRESERVED_TOKEN_PATTERN,
-            (_, index) => preservedValues[Number(index)] ?? ""
-        ),
-        text: masked,
-    };
 }
 
-export function hasMeaningfulTextForTranslation(text: string): boolean {
-    return prepareTextForTranslation(text).hasMeaningfulText;
+export function isTranslationAbortError(error: unknown): boolean {
+    return typeof error === "object"
+        && error !== null
+        && "name" in error
+        && error.name === "AbortError";
 }
 
 export function getMessageContent(message: DiscordMessage): string {
@@ -157,32 +156,58 @@ function parseIdList(value = ""): Set<string> {
     return new Set(value.split(",").map(id => id.trim()).filter(Boolean));
 }
 
+interface ParsedIdListCache {
+    ids: Set<string>;
+    value: string;
+}
+
+const ignoredIdListCache: Record<"ignoredChannels" | "ignoredGuilds" | "ignoredUsers", ParsedIdListCache> = {
+    ignoredChannels: { ids: new Set(), value: "" },
+    ignoredGuilds: { ids: new Set(), value: "" },
+    ignoredUsers: { ids: new Set(), value: "" },
+};
+
+function getCachedIdList(settingKey: keyof typeof ignoredIdListCache): Set<string> {
+    const value = useChatTranslatorSettings.getState()[settingKey] ?? "";
+    const cached = ignoredIdListCache[settingKey];
+
+    if (cached.value !== value) {
+        cached.ids = parseIdList(value);
+        cached.value = value;
+    }
+
+    return cached.ids;
+}
+
 function writeIdList(settingKey: "ignoredGuilds" | "ignoredChannels" | "ignoredUsers", ids: Set<string>) {
-    useChatTranslatorSettings.getState().updateSettings({ [settingKey]: Array.from(ids).join(",") } as any);
+    const update: Partial<ChatTranslatorSettings> = {
+        [settingKey]: Array.from(ids).join(","),
+    };
+    useChatTranslatorSettings.getState().updateSettings(update);
 }
 
 export function getIgnoredGuilds(): Set<string> {
-    return parseIdList(useChatTranslatorSettings.getState().ignoredGuilds);
+    return new Set(getCachedIdList("ignoredGuilds"));
 }
 
 export function getIgnoredChannels(): Set<string> {
-    return parseIdList(useChatTranslatorSettings.getState().ignoredChannels);
+    return new Set(getCachedIdList("ignoredChannels"));
 }
 
 export function getIgnoredUsers(): Set<string> {
-    return parseIdList(useChatTranslatorSettings.getState().ignoredUsers);
+    return new Set(getCachedIdList("ignoredUsers"));
 }
 
 export function isIgnoredGuild(guildId?: string | null): boolean {
-    return !!guildId && getIgnoredGuilds().has(guildId);
+    return !!guildId && getCachedIdList("ignoredGuilds").has(guildId);
 }
 
 export function isIgnoredChannel(channelId?: string | null): boolean {
-    return !!channelId && getIgnoredChannels().has(channelId);
+    return !!channelId && getCachedIdList("ignoredChannels").has(channelId);
 }
 
 export function isIgnoredUser(userId?: string | null): boolean {
-    return !!userId && getIgnoredUsers().has(userId);
+    return !!userId && getCachedIdList("ignoredUsers").has(userId);
 }
 
 export function setIgnoredGuild(guildId: string, ignored: boolean) {
@@ -205,18 +230,18 @@ export function setIgnoredUser(userId: string, ignored: boolean) {
 
 export function hasReceivedAutoTranslateChannelOverride(channelId?: string | null): boolean {
     if (!channelId) return false;
-    return Object.prototype.hasOwnProperty.call(useChatTranslatorSettings.getState().receivedChannelOverrides, channelId);
+    return Object.prototype.hasOwnProperty.call(useChatTranslatorSettings.getState().receivedChannelOverrides ?? {}, channelId);
 }
 
 export function getReceivedAutoTranslateChannelState(channelId?: string | null): boolean {
     const state = useChatTranslatorSettings.getState();
     if (!channelId) return state.autoTranslateReceived;
-    return state.receivedChannelOverrides[channelId] ?? state.autoTranslateReceived;
+    return (state.receivedChannelOverrides ?? {})[channelId] ?? state.autoTranslateReceived;
 }
 
 export function setReceivedAutoTranslateChannelState(channelId: string, enabled: boolean) {
     const state = useChatTranslatorSettings.getState();
-    const overrides = { ...state.receivedChannelOverrides };
+    const overrides = { ...(state.receivedChannelOverrides ?? {}) };
 
     if (enabled === state.autoTranslateReceived) delete overrides[channelId];
     else overrides[channelId] = enabled;
@@ -233,7 +258,7 @@ export function toggleReceivedAutoTranslateChannelState(channelId: string): bool
 
 export function clearReceivedAutoTranslateChannelOverride(channelId: string) {
     const state = useChatTranslatorSettings.getState();
-    const overrides = { ...state.receivedChannelOverrides };
+    const overrides = { ...(state.receivedChannelOverrides ?? {}) };
     delete overrides[channelId];
     state.updateSettings({ receivedChannelOverrides: overrides });
 }
@@ -276,14 +301,14 @@ export function clearSentAutoTranslateChannelOverride(channelId: string) {
 export function getReceivedTranslationOptionsForChannel(channelId?: string | null): Required<Pick<ReceivedTranslationOptions, "sourceLang" | "targetLang">> {
     const state = useChatTranslatorSettings.getState();
     return {
-        sourceLang: channelId ? state.receivedChannelInputOverrides[channelId] ?? state.receivedInput : state.receivedInput,
-        targetLang: channelId ? state.receivedChannelOutputOverrides[channelId] ?? state.receivedOutput : state.receivedOutput,
+        sourceLang: channelId ? (state.receivedChannelInputOverrides ?? {})[channelId] ?? state.receivedInput : state.receivedInput,
+        targetLang: channelId ? (state.receivedChannelOutputOverrides ?? {})[channelId] ?? state.receivedOutput : state.receivedOutput,
     };
 }
 
 export function setReceivedInputLanguageForChannel(channelId: string, value: string) {
     const state = useChatTranslatorSettings.getState();
-    const overrides = { ...state.receivedChannelInputOverrides };
+    const overrides = { ...(state.receivedChannelInputOverrides ?? {}) };
     const normalized = normalizeLanguageForService(value, state.service, true);
 
     if (!value || normalized === state.receivedInput) delete overrides[channelId];
@@ -294,7 +319,7 @@ export function setReceivedInputLanguageForChannel(channelId: string, value: str
 
 export function setReceivedOutputLanguageForChannel(channelId: string, value: string) {
     const state = useChatTranslatorSettings.getState();
-    const overrides = { ...state.receivedChannelOutputOverrides };
+    const overrides = { ...(state.receivedChannelOutputOverrides ?? {}) };
     const normalized = normalizeLanguageForService(value, state.service, false);
 
     if (!value || normalized === state.receivedOutput) delete overrides[channelId];
@@ -303,18 +328,49 @@ export function setReceivedOutputLanguageForChannel(channelId: string, value: st
     state.updateSettings({ receivedChannelOutputOverrides: overrides });
 }
 
+export function setReceivedLanguagesForChannel(channelId: string, sourceValue: string, targetValue: string) {
+    const state = useChatTranslatorSettings.getState();
+    const inputOverrides = { ...(state.receivedChannelInputOverrides ?? {}) };
+    const outputOverrides = { ...(state.receivedChannelOutputOverrides ?? {}) };
+    const source = normalizeLanguageForService(sourceValue, state.service, true);
+    const target = normalizeLanguageForService(targetValue, state.service, false);
+
+    if (!sourceValue || source === state.receivedInput) delete inputOverrides[channelId];
+    else inputOverrides[channelId] = source;
+
+    if (!targetValue || target === state.receivedOutput) delete outputOverrides[channelId];
+    else outputOverrides[channelId] = target;
+
+    state.updateSettings({
+        receivedChannelInputOverrides: inputOverrides,
+        receivedChannelOutputOverrides: outputOverrides,
+    });
+}
+
 export function clearReceivedInputLanguageOverride(channelId: string) {
     const state = useChatTranslatorSettings.getState();
-    const overrides = { ...state.receivedChannelInputOverrides };
+    const overrides = { ...(state.receivedChannelInputOverrides ?? {}) };
     delete overrides[channelId];
     state.updateSettings({ receivedChannelInputOverrides: overrides });
 }
 
 export function clearReceivedOutputLanguageOverride(channelId: string) {
     const state = useChatTranslatorSettings.getState();
-    const overrides = { ...state.receivedChannelOutputOverrides };
+    const overrides = { ...(state.receivedChannelOutputOverrides ?? {}) };
     delete overrides[channelId];
     state.updateSettings({ receivedChannelOutputOverrides: overrides });
+}
+
+export function clearReceivedLanguageOverrides(channelId: string) {
+    const state = useChatTranslatorSettings.getState();
+    const inputOverrides = { ...(state.receivedChannelInputOverrides ?? {}) };
+    const outputOverrides = { ...(state.receivedChannelOutputOverrides ?? {}) };
+    delete inputOverrides[channelId];
+    delete outputOverrides[channelId];
+    state.updateSettings({
+        receivedChannelInputOverrides: inputOverrides,
+        receivedChannelOutputOverrides: outputOverrides,
+    });
 }
 
 function countMessageLines(text: string): number {
@@ -323,11 +379,12 @@ function countMessageLines(text: string): number {
 }
 
 function hasCodeBlock(text: string): boolean {
-    return /```[\s\S]*?```/.test(text);
+    return /(?:^|\n)[ \t]*(?:>[ \t]?)*(?:`{3,}|~{3,})/.test(text);
 }
 
 function looksAlreadyTranslated(text: string): boolean {
-    return /(?:^|\n)\s*(?:\*?\(translated\)\*?|translated from\s+[^\n]+|translated by chattranslator)\s*$/i.test(text.trim());
+    return /(?:^|\n)\s*(?:-#\s*)?(?:\*?\(translated\)\*?|translated from\s+[^\n]+|translated by chattranslator)\s*$/i.test(text.trim())
+        || /`\([^`\n]+\s→\s[^`\n]+\)`\s*$/.test(text.trim());
 }
 
 export function getManualTranslationBlockReason(text: string): TranslationSkipResult | null {
@@ -426,13 +483,18 @@ export function normalizeTranslationFailureReason(error: unknown): string {
             : String(error);
 
     if (/azure translator api key is not set/i.test(message)) return "Azure Translator API key is missing.";
-    if (/deepl.*api key is not set|api key is not set/i.test(message)) return "DeepL API key is missing. Google Translate fallback was used when possible.";
-    if (/deepl.*quota exceeded|quota exceeded/i.test(message)) return "DeepL quota is used up. Google Translate fallback was used when possible.";
+    if (/deepl.*api key is not set|api key is not set/i.test(message)) return "DeepL API key is missing.";
+    if (/deepl.*quota exceeded|quota exceeded/i.test(message)) return "DeepL quota is used up.";
     if (/low google detection confidence/i.test(message)) return "Skipped: low Google detection confidence";
     if (/invalid .*api key|invalid azure|invalid deepl|401|403/i.test(message)) return "Invalid API key or translation service setting.";
-    if (/failed to connect|fetch failed|network|certificate|abort/i.test(message)) return "Network or certificate error while translating.";
+    if (/rate limit|returned 429/i.test(message)) return "The translation service rate limit was reached.";
+    if (/failed to connect|fetch failed|network|certificate|abort|timed out/i.test(message)) return "Network or certificate error while translating.";
+    if (/empty translation response/i.test(message)) return "The translation service returned an empty response.";
+    if (/target language is not set/i.test(message)) return "The target language is not set.";
+    if (/service is not selected/i.test(message)) return "The requested translation service is not selected.";
+    if (/invalid url/i.test(message)) return "The translation service endpoint is invalid.";
 
-    return `Failed: ${message}`;
+    return "The translation service returned an unexpected error.";
 }
 
 function normalizeCacheSignatureLanguage(language: string | undefined, isTarget: boolean): string {
@@ -456,29 +518,81 @@ export function createSecretFingerprint(secret?: string | null): string {
     return `${trimmed.length}:${cyrb64Hash(trimmed)}`;
 }
 
-export function getReceivedTranslationRequestSignatureFromValues(sourceLang?: string, targetLang?: string): string {
+function getTranslationRequestSignatureFromValues(
+    sourceLang: string | undefined,
+    targetLang: string | undefined,
+    includeGoogleConfidence: boolean
+): string {
     const state = useChatTranslatorSettings.getState();
+    const serviceSettings = state.service === "google"
+        ? [includeGoogleConfidence ? String(Number(state.googleConfidenceRequirement) || 0) : ""]
+        : state.service === "azure"
+            ? [
+                createSecretFingerprint(state.azureApiKey),
+                state.azureRegion.trim(),
+                state.azureEndpoint.trim(),
+            ]
+            : [createSecretFingerprint(state.deeplApiKey)];
 
-    return [
+    return JSON.stringify([
         state.service,
         normalizeCacheSignatureLanguage(sourceLang, false),
         normalizeCacheSignatureLanguage(targetLang, true),
-        createSecretFingerprint(state.deeplApiKey),
-        createSecretFingerprint(state.azureApiKey),
-        state.azureRegion.trim(),
-        state.azureEndpoint.trim(),
-        state.service === "google" ? String(Number(state.googleConfidenceRequirement) || 0) : "",
-    ].join("::");
+        ...serviceSettings,
+    ]);
+}
+
+export function getReceivedTranslationRequestSignatureFromValues(sourceLang?: string, targetLang?: string): string {
+    return getTranslationRequestSignatureFromValues(sourceLang, targetLang, true);
+}
+
+export function getReceivedTranslationNetworkSignatureFromValues(sourceLang?: string, targetLang?: string): string {
+    return getTranslationRequestSignatureFromValues(sourceLang, targetLang, false);
+}
+
+export function getSentTranslationRequestSignatureFromValues(sourceLang?: string, targetLang?: string): string {
+    return getTranslationRequestSignatureFromValues(sourceLang, targetLang, false);
+}
+
+export function getGoogleConfidenceSkipReason(
+    translated: TranslationValue,
+    ignoreConfidenceRequirement = false
+): string | null {
+    const state = useChatTranslatorSettings.getState();
+    const minimum = Number(state.googleConfidenceRequirement) || 0;
+
+    if (
+        state.service !== "google"
+        || ignoreConfidenceRequirement
+        || minimum <= 0
+        || translated.confidence == null
+        || translated.confidence >= minimum
+    ) return null;
+
+    return `Skipped: low Google detection confidence (${translated.confidence.toFixed(2)} < ${minimum.toFixed(2)})`;
 }
 
 function showDeepLFallbackNotice(key: string, message: string) {
     if (shownDeepLFallbackNotices.has(key)) return;
 
     shownDeepLFallbackNotices.add(key);
-    showToast(message, LanguageIcon);
+    try {
+        showToast(message, LanguageIcon);
+    } catch (error) {
+        logger.error(
+            "[ChatTranslator] Failed to show a translation fallback notice",
+            error instanceof Error ? error.name : "UnknownError"
+        );
+    }
 }
 
-async function googleTranslate(text: string, sourceLang: string, targetLang: string): Promise<TranslationValue> {
+async function googleTranslate(
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    signal?: AbortSignal,
+    reportCompletion?: TranslationRequestCompletionReporter
+): Promise<TranslationValue> {
     const url = "https://translate.googleapis.com/translate_a/single?" + new URLSearchParams({
         client: "gtx",
         sl: sourceLang || "auto",
@@ -489,24 +603,44 @@ async function googleTranslate(text: string, sourceLang: string, targetLang: str
         q: text,
     });
 
-    const res = await fetch(url, { signal: timeoutSignal(15000) });
-    if (!res.ok) throw new Error(`Google Translate returned ${res.status} ${res.statusText}`);
+    return fetchAndConsumeWithTimeout(url, {}, signal, async res => {
+        if (!res.ok) throw new Error(`Google Translate returned ${res.status} ${res.statusText}`);
 
-    const response = await res.json() as GoogleTranslateResponse;
-    const translation = response.sentences?.map(sentence => sentence.trans).filter(Boolean).join("") ?? "";
-    if (!translation) throw new Error("Google Translate returned an empty translation response.");
+        const response = await res.json() as GoogleTranslateResponse;
+        const translation = Array.isArray(response.sentences)
+            ? response.sentences
+                .map(sentence => sentence?.trans)
+                .filter((part): part is string => typeof part === "string")
+                .join("")
+            : "";
+        if (!translation.trim()) throw new Error("Google Translate returned an empty translation response.");
 
-    const sourceLanguage = response.src ?? response.ld_result?.srclangs?.[0] ?? sourceLang;
-    const confidence = response.confidence ?? response.ld_result?.srclangs_confidences?.[0];
+        const detectedSource = typeof response.src === "string"
+            ? response.src
+            : typeof response.ld_result?.srclangs?.[0] === "string"
+                ? response.ld_result.srclangs[0]
+                : sourceLang;
+        const rawConfidence = response.confidence ?? response.ld_result?.srclangs_confidences?.[0];
+        const confidence = typeof rawConfidence === "number" && Number.isFinite(rawConfidence)
+            ? rawConfidence
+            : undefined;
 
-    return {
-        confidence,
-        sourceLanguage: getLanguageDisplayName(sourceLanguage),
-        text: translation,
-    };
+        return {
+            confidence,
+            sourceLanguage: getLanguageDisplayName(detectedSource),
+            text: translation,
+        };
+    }, reportCompletion);
 }
 
-async function deeplTranslate(service: TranslationService, text: string, sourceLang: string, targetLang: string): Promise<TranslationValue> {
+async function deeplTranslate(
+    service: TranslationService,
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    signal?: AbortSignal,
+    reportCompletion?: TranslationRequestCompletionReporter
+): Promise<TranslationValue> {
     const state = useChatTranslatorSettings.getState();
     if (!state.deeplApiKey.trim()) throw new Error("DeepL API key is not set.");
 
@@ -524,36 +658,48 @@ async function deeplTranslate(service: TranslationService, text: string, sourceL
         ? "https://api.deepl.com/v2/translate"
         : "https://api-free.deepl.com/v2/translate";
 
-    const res = await fetch(endpoint, {
+    return fetchAndConsumeWithTimeout(endpoint, {
         method: "POST",
         headers: {
             Authorization: `DeepL-Auth-Key ${state.deeplApiKey.trim()}`,
             "Content-Type": "application/x-www-form-urlencoded",
         },
         body: body.toString(),
-        signal: timeoutSignal(15000),
-    });
+    }, signal, async (res, requestSignal) => {
+        const response = await parseOptionalJson<DeepLTranslateResponse>(res, requestSignal);
+        if (!res.ok) {
+            if (res.status === 456) throw new Error("DeepL API quota exceeded.");
+            throw new Error(response.message || `DeepL returned ${res.status} ${res.statusText}`);
+        }
 
-    const response = await res.json().catch(() => ({})) as DeepLTranslateResponse;
-    if (!res.ok) {
-        if (res.status === 456) throw new Error("DeepL API quota exceeded.");
-        throw new Error(response.message || `DeepL returned ${res.status} ${res.statusText}`);
-    }
+        const first = Array.isArray(response.translations) ? response.translations[0] : undefined;
+        if (typeof first?.text !== "string" || !first.text.trim()) {
+            throw new Error("DeepL returned an empty translation response.");
+        }
+        const detectedSource = typeof first.detected_source_language === "string"
+            ? first.detected_source_language
+            : sourceLang;
 
-    const first = response.translations?.[0];
-    if (!first?.text) throw new Error("DeepL returned an empty translation response.");
-
-    return {
-        sourceLanguage: getLanguageDisplayName(first.detected_source_language || sourceLang),
-        text: first.text,
-    };
+        return {
+            sourceLanguage: getLanguageDisplayName(detectedSource),
+            text: first.text,
+        };
+    }, reportCompletion);
 }
 
-async function fallbackToGoogle(text: string, sourceLang: string, targetLang: string): Promise<TranslationValue> {
+async function fallbackToGoogle(
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    signal?: AbortSignal,
+    reportCompletion?: TranslationRequestCompletionReporter
+): Promise<TranslationValue> {
     return googleTranslate(
         text,
         deeplLanguageToGoogleLanguage(sourceLang || "auto"),
-        deeplLanguageToGoogleLanguage(targetLang || "en")
+        deeplLanguageToGoogleLanguage(targetLang || "en"),
+        signal,
+        reportCompletion
     );
 }
 
@@ -571,7 +717,7 @@ export function switchDeepLToGoogleIfApiKeyMissing(): boolean {
     return true;
 }
 
-export async function getDeeplUsage(): Promise<DeepLUsageResponse> {
+export async function getDeeplUsage(signal?: AbortSignal): Promise<DeepLUsageResponse> {
     const state = useChatTranslatorSettings.getState();
     if (state.service !== "deepl" && state.service !== "deepl-pro") {
         throw new Error("DeepL service is not selected.");
@@ -584,21 +730,20 @@ export async function getDeeplUsage(): Promise<DeepLUsageResponse> {
         ? "https://api.deepl.com/v2/usage"
         : "https://api-free.deepl.com/v2/usage";
 
-    const res = await fetch(endpoint, {
+    return fetchAndConsumeWithTimeout(endpoint, {
         headers: {
             Authorization: `DeepL-Auth-Key ${apiKey}`,
         },
-        signal: timeoutSignal(15000),
+    }, signal, async (res, requestSignal) => {
+        const response = await parseOptionalJson<DeepLUsageResponse>(res, requestSignal);
+        if (!res.ok) {
+            if (res.status === 403) throw new Error("DeepL API key is invalid or does not match the selected Free/Pro service.");
+            if (res.status === 456) throw new Error("DeepL API quota exceeded.");
+            throw new Error(response.message || `DeepL usage returned ${res.status} ${res.statusText}`);
+        }
+
+        return response;
     });
-
-    const response = await res.json().catch(() => ({})) as DeepLUsageResponse;
-    if (!res.ok) {
-        if (res.status === 403) throw new Error("DeepL API key is invalid or does not match the selected Free/Pro service.");
-        if (res.status === 456) throw new Error("DeepL API quota exceeded.");
-        throw new Error(response.message || `DeepL usage returned ${res.status} ${res.statusText}`);
-    }
-
-    return response;
 }
 
 function normalizeAzureLanguage(language: string): string {
@@ -656,7 +801,13 @@ function getAzureTranslateUrl(sourceLang: string, targetLang: string): string {
     return url.toString();
 }
 
-async function azureTranslate(text: string, sourceLang: string, targetLang: string): Promise<TranslationValue> {
+async function azureTranslate(
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    signal?: AbortSignal,
+    reportCompletion?: TranslationRequestCompletionReporter
+): Promise<TranslationValue> {
     const state = useChatTranslatorSettings.getState();
     if (!state.azureApiKey.trim()) throw new Error("Azure Translator API key is not set.");
 
@@ -669,35 +820,37 @@ async function azureTranslate(text: string, sourceLang: string, targetLang: stri
         headers["Ocp-Apim-Subscription-Region"] = state.azureRegion.trim();
     }
 
-    const res = await fetch(getAzureTranslateUrl(sourceLang, targetLang), {
+    return fetchAndConsumeWithTimeout(getAzureTranslateUrl(sourceLang, targetLang), {
         method: "POST",
         headers,
         body: JSON.stringify([{ Text: text }]),
-        signal: timeoutSignal(15000),
-    });
+    }, signal, async res => {
+        const responseText = await res.text();
+        if (!res.ok) {
+            if (res.status === 429) throw new Error("Azure Translator rate limit exceeded.");
+            throw new Error(`Azure Translator returned ${res.status} ${res.statusText}`);
+        }
 
-    const responseText = await res.text();
-    if (!res.ok) {
-        if (res.status === 429) throw new Error("Azure Translator rate limit exceeded.");
-        throw new Error(`Azure Translator returned ${res.status} ${res.statusText}: ${responseText}`);
-    }
+        const response = JSON.parse(responseText) as AzureTranslationResponseEntry[];
+        const firstResult = Array.isArray(response) ? response[0] : undefined;
+        const translated = Array.isArray(firstResult?.translations) ? firstResult.translations[0] : undefined;
+        if (typeof translated?.text !== "string" || !translated.text.trim()) {
+            throw new Error("Azure Translator returned an empty translation response.");
+        }
 
-    const [firstResult] = JSON.parse(responseText) as AzureTranslationResponseEntry[];
-    const translated = firstResult?.translations?.[0];
-    if (!translated?.text) throw new Error("Azure Translator returned an empty translation response.");
+        const detectedSource = typeof firstResult?.detectedLanguage?.language === "string"
+            ? azureLanguageToInternal(firstResult.detectedLanguage.language)
+            : sourceLang;
 
-    const detectedSource = firstResult.detectedLanguage?.language
-        ? azureLanguageToInternal(firstResult.detectedLanguage.language)
-        : sourceLang;
-
-    return {
-        sourceLanguage: getLanguageDisplayName(detectedSource),
-        text: translated.text,
-    };
+        return {
+            sourceLanguage: getLanguageDisplayName(detectedSource),
+            text: translated.text,
+        };
+    }, reportCompletion);
 }
 
-export async function testAzureConnection(): Promise<TranslationValue> {
-    return azureTranslate("안녕하세요", "auto", "en");
+export async function testAzureConnection(signal?: AbortSignal): Promise<TranslationValue> {
+    return azureTranslate("안녕하세요", "auto", "en", signal);
 }
 
 export async function translate(kind: "received" | "sent", text: string, options?: ReceivedTranslationOptions): Promise<TranslationValue> {
@@ -717,7 +870,13 @@ export async function translate(kind: "received" | "sent", text: string, options
 
     if ((state.service === "deepl" || state.service === "deepl-pro") && !state.deeplApiKey.trim()) {
         switchDeepLToGoogleIfApiKeyMissing();
-        const translated = await fallbackToGoogle(prepared.text, rawSourceLang, rawTargetLang);
+        const translated = await fallbackToGoogle(
+            prepared.text,
+            rawSourceLang,
+            rawTargetLang,
+            options?.signal,
+            options?.reportRequestCompletion
+        );
 
         return {
             ...translated,
@@ -728,10 +887,23 @@ export async function translate(kind: "received" | "sent", text: string, options
     let translated: TranslationValue;
 
     if (state.service === "azure") {
-        translated = await azureTranslate(prepared.text, sourceLang, targetLang);
+        translated = await azureTranslate(
+            prepared.text,
+            sourceLang,
+            targetLang,
+            options?.signal,
+            options?.reportRequestCompletion
+        );
     } else if (state.service === "deepl" || state.service === "deepl-pro") {
         try {
-            translated = await deeplTranslate(state.service, prepared.text, rawSourceLang, rawTargetLang);
+            translated = await deeplTranslate(
+                state.service,
+                prepared.text,
+                rawSourceLang,
+                rawTargetLang,
+                options?.signal,
+                options?.reportRequestCompletion
+            );
         } catch (error) {
             if (!/deepl.*quota exceeded|quota exceeded/i.test(error instanceof Error ? error.message : String(error))) throw error;
 
@@ -743,22 +915,22 @@ export async function translate(kind: "received" | "sent", text: string, options
                 "DeepL quota is used up, so this translation used Google Translate."
             );
             logger.warn("[ChatTranslator] DeepL quota exceeded. Falling back to Google Translate for this request.");
-            translated = await fallbackToGoogle(prepared.text, rawSourceLang, rawTargetLang);
+            translated = await fallbackToGoogle(
+                prepared.text,
+                rawSourceLang,
+                rawTargetLang,
+                options?.signal,
+                options?.reportRequestCompletion
+            );
         }
     } else {
-        translated = await googleTranslate(prepared.text, sourceLang, targetLang);
-    }
-
-    const minimumGoogleConfidence = Number(state.googleConfidenceRequirement) || 0;
-    if (
-        kind === "received"
-        && state.service === "google"
-        && !options?.ignoreConfidenceRequirement
-        && minimumGoogleConfidence > 0
-        && translated.confidence != null
-        && translated.confidence < minimumGoogleConfidence
-    ) {
-        throw new Error(`Low Google detection confidence (${translated.confidence.toFixed(2)} < ${minimumGoogleConfidence.toFixed(2)})`);
+        translated = await googleTranslate(
+            prepared.text,
+            sourceLang,
+            targetLang,
+            options?.signal,
+            options?.reportRequestCompletion
+        );
     }
 
     return {

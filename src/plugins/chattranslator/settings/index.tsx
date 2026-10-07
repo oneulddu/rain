@@ -16,14 +16,16 @@ import {
     clearTranslationCache,
     clearTranslationCacheForSignature,
     getTranslationCacheStats,
+    getTranslationStateVersion,
+    MAX_TRANSLATION_CACHE_LIMIT,
     pruneTranslationCache,
     revertAllTranslatedMessages,
+    subscribeTranslationState,
 } from "../state";
 import { ChatTranslatorSettings, defaultChatTranslatorSettings, TranslationService, useChatTranslatorSettings } from "../storage";
 import {
     clearReceivedAutoTranslateChannelOverride,
-    clearReceivedInputLanguageOverride,
-    clearReceivedOutputLanguageOverride,
+    clearReceivedLanguageOverrides,
     clearSentAutoTranslateChannelOverride,
     getDeeplUsage,
     getReceivedAutoTranslateChannelState,
@@ -34,8 +36,7 @@ import {
     hasSentAutoTranslateChannelOverride,
     normalizeTranslationFailureReason,
     setReceivedAutoTranslateChannelState,
-    setReceivedInputLanguageForChannel,
-    setReceivedOutputLanguageForChannel,
+    setReceivedLanguagesForChannel,
     setSentAutoTranslateChannelState,
     testAzureConnection,
 } from "../utils";
@@ -63,6 +64,7 @@ function TextInputRow({
     placeholder,
     description,
     onChange,
+    onBlur,
     keyboardType,
 }: {
     label: string;
@@ -70,6 +72,7 @@ function TextInputRow({
     placeholder?: string;
     description?: string;
     onChange: (value: string) => void;
+    onBlur?: () => void;
     keyboardType?: "numeric" | "email-address" | "phone-pad";
 }) {
     return (
@@ -81,6 +84,7 @@ function TextInputRow({
                         placeholder={placeholder}
                         value={value}
                         onChange={onChange}
+                        onBlur={onBlur}
                         isClearable
                         keyboardType={keyboardType}
                     />
@@ -95,26 +99,128 @@ function TextInputRow({
     );
 }
 
+function NumericInputRow({
+    description,
+    label,
+    max = Number.POSITIVE_INFINITY,
+    onChange,
+    placeholder,
+    value,
+}: {
+    description?: string;
+    label: string;
+    max?: number;
+    onChange: (value: number) => void;
+    placeholder?: string;
+    value: number;
+}) {
+    const [draft, setDraft] = React.useState(String(value));
+
+    React.useEffect(() => {
+        setDraft(String(value));
+    }, [value]);
+
+    const updateDraft = (nextDraft: string) => {
+        if (!nextDraft.trim()) {
+            setDraft("");
+            onChange(0);
+            return;
+        }
+
+        const parsed = Number(nextDraft);
+        if (!Number.isFinite(parsed)) {
+            setDraft(nextDraft);
+            return;
+        }
+
+        const nextValue = Math.min(max, Math.max(0, parsed));
+        setDraft(String(nextValue));
+        onChange(nextValue);
+    };
+
+    return (
+        <TextInputRow
+            description={description}
+            keyboardType="numeric"
+            label={label}
+            onBlur={() => setDraft(String(value))}
+            onChange={updateDraft}
+            placeholder={placeholder}
+            value={draft}
+        />
+    );
+}
+
 export default function ChatTranslatorSettings() {
     const navigation = NavigationNative.useNavigation();
     const settings = useChatTranslatorSettings();
-    const [, forceUpdate] = React.useReducer((x: number) => ~x, 0);
     const [deeplUsageText, setDeeplUsageText] = React.useState("");
     const [deeplUsageLoading, setDeeplUsageLoading] = React.useState(false);
     const [azureTestText, setAzureTestText] = React.useState("");
     const [azureTestLoading, setAzureTestLoading] = React.useState(false);
+    const deeplUsageController = React.useRef<AbortController | null>(null);
+    const azureTestController = React.useRef<AbortController | null>(null);
+    const mounted = React.useRef(true);
+    const translationStateVersion = React.useSyncExternalStore(
+        subscribeTranslationState,
+        getTranslationStateVersion,
+        getTranslationStateVersion
+    );
     const selectedChannelId = FluxUtils?.useStateFromStores?.(
         [SelectedChannelStore],
         () => SelectedChannelStore?.getChannelId?.() ?? SelectedChannelStore?.getCurrentlySelectedChannelId?.()
     );
-    const selectedChannel = selectedChannelId ? ChannelStore?.getChannel?.(selectedChannelId) : null;
+    const selectedChannel = FluxUtils?.useStateFromStores?.(
+        [ChannelStore],
+        () => selectedChannelId ? ChannelStore?.getChannel?.(selectedChannelId) : null,
+        [selectedChannelId]
+    ) ?? (selectedChannelId ? ChannelStore?.getChannel?.(selectedChannelId) : null);
     const channelAutoEnabled = getReceivedAutoTranslateChannelState(selectedChannelId);
     const channelHasOverride = hasReceivedAutoTranslateChannelOverride(selectedChannelId);
     const channelSentAutoEnabled = getSentAutoTranslateChannelState(selectedChannelId);
     const channelSentHasOverride = hasSentAutoTranslateChannelOverride(selectedChannelId);
     const channelLanguages = getReceivedTranslationOptionsForChannel(selectedChannelId);
     const currentCacheSignature = getReceivedTranslationCacheSignatureFromValues(channelLanguages.sourceLang, channelLanguages.targetLang);
-    const cacheStats = getTranslationCacheStats(currentCacheSignature);
+    const cacheStats = React.useMemo(
+        () => getTranslationCacheStats(currentCacheSignature),
+        [
+            currentCacheSignature,
+            settings.translationCacheLimit,
+            settings.translationCacheTtlDays,
+            translationStateVersion,
+        ]
+    );
+
+    React.useEffect(() => {
+        mounted.current = true;
+        return () => {
+            mounted.current = false;
+        };
+    }, []);
+
+    React.useEffect(() => {
+        deeplUsageController.current?.abort();
+        deeplUsageController.current = null;
+        setDeeplUsageLoading(false);
+        setDeeplUsageText("");
+
+        return () => {
+            deeplUsageController.current?.abort();
+            deeplUsageController.current = null;
+        };
+    }, [settings.deeplApiKey, settings.service]);
+
+    React.useEffect(() => {
+        azureTestController.current?.abort();
+        azureTestController.current = null;
+        setAzureTestLoading(false);
+        setAzureTestText("");
+
+        return () => {
+            azureTestController.current?.abort();
+            azureTestController.current = null;
+        };
+    }, [settings.azureApiKey, settings.azureEndpoint, settings.azureRegion, settings.service]);
 
     const openLanguagePage = (title: string, settingKey: "receivedInput" | "receivedOutput" | "sentInput" | "sentOutput", includeAuto: boolean, channelId?: string) => {
         navigation.push("RAIN_CUSTOM_PAGE", {
@@ -144,13 +250,17 @@ export default function ChatTranslatorSettings() {
     };
 
     const checkDeeplUsage = async () => {
-        if (deeplUsageLoading) return;
+        if (deeplUsageController.current) return;
 
+        const controller = new AbortController();
+        deeplUsageController.current = controller;
         setDeeplUsageLoading(true);
         setDeeplUsageText("Checking DeepL usage...");
 
         try {
-            const usage = await getDeeplUsage();
+            const usage = await getDeeplUsage(controller.signal);
+            if (controller.signal.aborted || deeplUsageController.current !== controller) return;
+
             const used = usage.character_count ?? usage.api_key_character_count ?? 0;
             const limit = usage.character_limit ?? usage.api_key_character_limit ?? 0;
             const text = limit > 0
@@ -160,32 +270,46 @@ export default function ChatTranslatorSettings() {
             setDeeplUsageText(text);
             showToast(text, findAssetId("Check"));
         } catch (error) {
+            if (controller.signal.aborted || deeplUsageController.current !== controller) return;
+
             const text = normalizeTranslationFailureReason(error);
             setDeeplUsageText(text);
             showToast(text, findAssetId("LanguageIcon"));
         } finally {
-            setDeeplUsageLoading(false);
+            if (deeplUsageController.current === controller) {
+                deeplUsageController.current = null;
+                setDeeplUsageLoading(false);
+            }
         }
     };
 
     const runAzureConnectionTest = async () => {
-        if (azureTestLoading) return;
+        if (azureTestController.current) return;
 
+        const controller = new AbortController();
+        azureTestController.current = controller;
         setAzureTestLoading(true);
         setAzureTestText("Testing Azure connection...");
 
         try {
-            const result = await testAzureConnection();
+            const result = await testAzureConnection(controller.signal);
+            if (controller.signal.aborted || azureTestController.current !== controller) return;
+
             const text = `Azure OK · ${result.sourceLanguage || "Auto"} → English`;
 
             setAzureTestText(text);
             showToast(text, findAssetId("Check"));
         } catch (error) {
+            if (controller.signal.aborted || azureTestController.current !== controller) return;
+
             const text = normalizeTranslationFailureReason(error);
             setAzureTestText(text);
             showToast(text, findAssetId("LanguageIcon"));
         } finally {
-            setAzureTestLoading(false);
+            if (azureTestController.current === controller) {
+                azureTestController.current = null;
+                setAzureTestLoading(false);
+            }
         }
     };
 
@@ -313,7 +437,6 @@ export default function ChatTranslatorSettings() {
                             value={channelAutoEnabled}
                             onValueChange={(value: boolean) => {
                                 setReceivedAutoTranslateChannelState(selectedChannelId, value);
-                                forceUpdate();
                             }}
                         />
                         {channelHasOverride && (
@@ -322,7 +445,6 @@ export default function ChatTranslatorSettings() {
                                 trailing={() => <TableRow.Arrow />}
                                 onPress={() => {
                                     clearReceivedAutoTranslateChannelOverride(selectedChannelId);
-                                    forceUpdate();
                                 }}
                             />
                         )}
@@ -332,7 +454,6 @@ export default function ChatTranslatorSettings() {
                             value={channelSentAutoEnabled}
                             onValueChange={(value: boolean) => {
                                 setSentAutoTranslateChannelState(selectedChannelId, value);
-                                forceUpdate();
                             }}
                         />
                         {channelSentHasOverride && (
@@ -341,7 +462,6 @@ export default function ChatTranslatorSettings() {
                                 trailing={() => <TableRow.Arrow />}
                                 onPress={() => {
                                     clearSentAutoTranslateChannelOverride(selectedChannelId);
-                                    forceUpdate();
                                 }}
                             />
                         )}
@@ -362,58 +482,55 @@ export default function ChatTranslatorSettings() {
                             subLabel="Auto-detect and translate received messages to Korean."
                             trailing={() => <TableRow.Arrow />}
                             onPress={() => {
-                                setReceivedInputLanguageForChannel(selectedChannelId, "auto");
-                                setReceivedOutputLanguageForChannel(selectedChannelId, "ko");
+                                setReceivedLanguagesForChannel(selectedChannelId, "auto", "ko");
                                 showToast("This channel will translate to Korean", findAssetId("Check"));
-                                forceUpdate();
                             }}
                         />
                         <TableRow
                             label="Use global languages"
                             trailing={() => <TableRow.Arrow />}
                             onPress={() => {
-                                clearReceivedInputLanguageOverride(selectedChannelId);
-                                clearReceivedOutputLanguageOverride(selectedChannelId);
+                                clearReceivedLanguageOverrides(selectedChannelId);
                                 showToast("Channel language overrides cleared", findAssetId("Check"));
-                                forceUpdate();
                             }}
                         />
                         <TableRow
                             label="Clear channel cache"
                             trailing={() => <TableRow.Arrow />}
-                            onPress={() => {
-                                clearChannelTranslationCache(selectedChannelId);
-                                showToast("Channel translation cache cleared", findAssetId("Check"));
-                                forceUpdate();
+                            onPress={async () => {
+                                const cleared = await clearChannelTranslationCache(selectedChannelId);
+                                if (mounted.current) {
+                                    showToast(
+                                        cleared ? "Channel translation cache cleared" : "Could not persist the channel cache change",
+                                        findAssetId(cleared ? "Check" : "LanguageIcon")
+                                    );
+                                }
                             }}
                         />
                     </TableRowGroup>
                 )}
 
                 <TableRowGroup title="Auto Translate Filters">
-                    <TextInputRow
+                    <NumericInputRow
                         label="Max characters"
-                        value={String(settings.autoTranslateMaxCharacters)}
+                        value={settings.autoTranslateMaxCharacters}
                         placeholder="0 = no character limit"
                         description="0 means no character limit."
-                        keyboardType="numeric"
-                        onChange={value => updateSettings({ autoTranslateMaxCharacters: Math.max(0, Number(value) || 0) })}
+                        onChange={value => updateSettings({ autoTranslateMaxCharacters: value })}
                     />
-                    <TextInputRow
+                    <NumericInputRow
                         label="Max lines"
-                        value={String(settings.autoTranslateMaxLines)}
+                        value={settings.autoTranslateMaxLines}
                         placeholder="0 = no line limit"
                         description="0 means no line limit."
-                        keyboardType="numeric"
-                        onChange={value => updateSettings({ autoTranslateMaxLines: Math.max(0, Number(value) || 0) })}
+                        onChange={value => updateSettings({ autoTranslateMaxLines: value })}
                     />
-                    <TextInputRow
+                    <NumericInputRow
                         label="Google confidence requirement"
-                        value={String(settings.googleConfidenceRequirement)}
+                        value={settings.googleConfidenceRequirement}
                         placeholder="0 = do not check confidence"
                         description="0 turns this check off."
-                        keyboardType="numeric"
-                        onChange={value => updateSettings({ googleConfidenceRequirement: Math.max(0, Number(value) || 0) })}
+                        onChange={value => updateSettings({ googleConfidenceRequirement: value })}
                     />
                     <TableSwitchRow
                         label="Skip code block messages"
@@ -458,56 +575,61 @@ export default function ChatTranslatorSettings() {
                         label="Stats"
                         subLabel={`${cacheStats.cached}/${cacheStats.limit} cached · ${cacheStats.signatureCached ?? 0} match current languages · ${cacheStats.expired} expired · ${cacheStats.translated} translated · ${cacheStats.pending} pending`}
                     />
-                    <TextInputRow
+                    <NumericInputRow
                         label="Max persistent cache entries"
-                        value={String(settings.translationCacheLimit ?? defaultChatTranslatorSettings.translationCacheLimit)}
+                        value={settings.translationCacheLimit ?? defaultChatTranslatorSettings.translationCacheLimit}
                         placeholder="0 = do not keep persistent cache"
-                        description="0 disables keeping new persistent cache entries."
-                        keyboardType="numeric"
-                        onChange={value => {
-                            updateSettings({ translationCacheLimit: Math.max(0, Number(value) || 0) });
-                            pruneTranslationCache();
-                        }}
+                        description={`0 disables persistent cache. Values above ${MAX_TRANSLATION_CACHE_LIMIT.toLocaleString()} are capped.`}
+                        max={MAX_TRANSLATION_CACHE_LIMIT}
+                        onChange={value => updateSettings({ translationCacheLimit: value })}
                     />
-                    <TextInputRow
+                    <NumericInputRow
                         label="Cache TTL days"
-                        value={String(settings.translationCacheTtlDays ?? defaultChatTranslatorSettings.translationCacheTtlDays)}
+                        value={settings.translationCacheTtlDays ?? defaultChatTranslatorSettings.translationCacheTtlDays}
                         placeholder="0 = cache never expires"
                         description="0 means cached translations never expire by age."
-                        keyboardType="numeric"
-                        onChange={value => {
-                            updateSettings({ translationCacheTtlDays: Math.max(0, Number(value) || 0) });
-                            pruneTranslationCache();
-                        }}
+                        onChange={value => updateSettings({ translationCacheTtlDays: value })}
                     />
                     <TableRow
                         label="Clear current language cache"
                         subLabel={`Deletes cached translations for ${getLanguageDisplayName(channelLanguages.sourceLang)} → ${getLanguageDisplayName(channelLanguages.targetLang)}. Visible matching translations are reverted.`}
                         trailing={() => <TableRow.Arrow />}
-                        onPress={() => {
-                            clearTranslationCacheForSignature(currentCacheSignature);
-                            showToast("Current language translation cache cleared", findAssetId("Check"));
-                            forceUpdate();
+                        onPress={async () => {
+                            const cleared = await clearTranslationCacheForSignature(currentCacheSignature);
+                            if (mounted.current) {
+                                showToast(
+                                    cleared ? "Current language translation cache cleared" : "Could not persist the language cache change",
+                                    findAssetId(cleared ? "Check" : "LanguageIcon")
+                                );
+                            }
                         }}
                     />
                     <TableRow
                         label="Clean expired cache"
                         subLabel="Deletes only cache entries older than the TTL above."
                         trailing={() => <TableRow.Arrow />}
-                        onPress={() => {
-                            pruneTranslationCache();
-                            showToast("Expired translation cache cleaned", findAssetId("Check"));
-                            forceUpdate();
+                        onPress={async () => {
+                            const cleaned = await pruneTranslationCache();
+                            if (mounted.current) {
+                                showToast(
+                                    cleaned ? "Expired translation cache cleaned" : "Could not persist the cache cleanup",
+                                    findAssetId(cleaned ? "Check" : "LanguageIcon")
+                                );
+                            }
                         }}
                     />
                     <TableRow
                         label="Clear translation cache"
                         subLabel="Deletes every cached translation and reverts visible translated messages."
                         trailing={() => <TableRow.Arrow />}
-                        onPress={() => {
-                            clearTranslationCache();
-                            showToast("Translation cache cleared", findAssetId("Check"));
-                            forceUpdate();
+                        onPress={async () => {
+                            const cleared = await clearTranslationCache();
+                            if (mounted.current) {
+                                showToast(
+                                    cleared ? "Translation cache cleared" : "Could not clear and persist the translation cache",
+                                    findAssetId(cleared ? "Check" : "LanguageIcon")
+                                );
+                            }
                         }}
                     />
                     <TableRow
@@ -516,7 +638,6 @@ export default function ChatTranslatorSettings() {
                         onPress={() => {
                             revertAllTranslatedMessages();
                             showToast("Visible translations reverted", findAssetId("Check"));
-                            forceUpdate();
                         }}
                     />
                 </TableRowGroup>

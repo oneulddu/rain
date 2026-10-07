@@ -18,6 +18,8 @@ const GOOGLE_CODE_SET = new Set(Object.values(GTranslateLangs as Record<string, 
 const DEEPL_NAME_BY_CODE = Object.fromEntries(
     Object.entries(DeepLLangs as Record<string, string>).map(([name, code]) => [code.toUpperCase(), name])
 ) as Record<string, string>;
+DEEPL_NAME_BY_CODE.JV = "Javanese";
+DEEPL_NAME_BY_CODE.TL = "Tagalog";
 const DEEPL_CODE_SET = new Set([
     ...Object.values(DeepLLangs as Record<string, string>).map(code => code.toUpperCase()),
     "EN",
@@ -30,6 +32,8 @@ const DEEPL_CODE_SET = new Set([
     "ZH-HANS",
     "ZH-HANT",
     "NB",
+    "JV",
+    "TL",
 ]);
 const DEEPL_REGIONAL_SOURCE_COLLAPSE: Record<string, string> = {
     "EN-US": "EN",
@@ -44,9 +48,9 @@ const GOOGLE_TO_DEEPL_SOURCE: Record<string, string> = {
     "zh-CN": "ZH",
     "zh-TW": "ZH",
     iw: "HE",
+    jw: "JV",
     no: "NB",
-    jw: "JA",
-    tl: "ID",
+    tl: "TL",
 };
 
 const GOOGLE_TO_DEEPL_TARGET: Record<string, string> = {
@@ -62,8 +66,10 @@ const DEEPL_TO_GOOGLE: Record<string, string> = {
     "ZH-HANS": "zh-CN",
     "ZH-HANT": "zh-TW",
     HE: "iw",
+    JV: "jw",
     NO: "no",
     NB: "no",
+    TL: "tl",
     "EN-US": "en",
     "EN-GB": "en",
     "PT-BR": "pt",
@@ -136,8 +142,12 @@ function googleOptions(includeAuto: boolean): LanguageOption[] {
 }
 
 function deeplOptions(includeAuto: boolean): LanguageOption[] {
-    const options = Object.entries(DeepLLangs as Record<string, string>)
-        .map(([label, value]) => ({ label, value: value.toUpperCase() }));
+    const options = [
+        ...Object.entries(DeepLLangs as Record<string, string>)
+            .map(([label, value]) => ({ label, value: value.toUpperCase() })),
+        { label: "Javanese", value: "JV" },
+        { label: "Tagalog", value: "TL" },
+    ];
 
     return uniqueOptions(includeAuto ? [{ label: "Detect language", value: "auto" }, ...options] : options);
 }
