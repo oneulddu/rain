@@ -36,6 +36,7 @@ function fixture({ failAt = -1, failRestore = false } = {}) {
     const state = {
         setChatTranslatorRuntimeActive: value => { active = value; },
         revertAllTranslatedMessages: () => {
+            assert.equal(active, true, "restoring messages requires an active dispatcher");
             if (failRestore) throw new Error("restore failed");
         },
     };

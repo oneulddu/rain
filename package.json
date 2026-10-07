@@ -8,7 +8,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "serve": "node scripts/serve.mjs",
-    "lint": "eslint ./src --fix"
+    "lint": "eslint ./src --fix",
+    "test:chattranslator": "bun tests/chattranslator-regressions.mjs && node --test scripts/chattranslator-*.test.mjs tests/chattranslator-integration.test.mjs"
   },
   "license": "BSD-3-Clause",
   "devDependencies": {

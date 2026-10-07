@@ -1,12 +1,14 @@
 import { findAssetId } from "@api/assets";
-import { readFile, writeFile } from "@api/native/fs";
+import { readStorageFile, rehydratePluginStore, updateStorageFile, writeStorageFile } from "@api/storage";
 import { showToast } from "@api/ui/toasts";
 import { logger } from "@lib/utils/logger";
-import { isPluginEnabled,pluginInstances, startPlugin, stopPlugin } from "@plugins";
-import { saveFont,useFonts } from "@plugins/_core/painter/fonts";
-import { installTheme, selectTheme,useThemes } from "@plugins/_core/painter/themes";
+import { isPluginEnabled, pluginInstances, startPlugin, stopPlugin } from "@plugins";
+import { saveFont, useFonts } from "@plugins/_core/painter/fonts";
+import { installTheme, selectTheme, useThemes } from "@plugins/_core/painter/themes";
 
+import { cloudSyncSettings } from "../storage";
 import type { UserData } from "../types";
+import { prepareImportedPluginStorage, sanitizePluginStorage } from "./storageSanitizer";
 
 // Helper functions to map IDs <-> URLs
 const pluginUrl = (id: string) => `https://raincord.dev/plugins/${encodeURIComponent(id)}`;
@@ -15,30 +17,6 @@ const fontUrl = (id: string) => `https://raincord.dev/fonts/${encodeURIComponent
 const fromPluginUrl = (url: string) => decodeURIComponent(url.replace(/^https:\/\/raincord\.dev\/plugins\//, ""));
 const fromThemeUrl = (url: string) => decodeURIComponent(url.replace(/^https:\/\/raincord\.dev\/themes\//, ""));
 const fromFontUrl = (url: string) => decodeURIComponent(url.replace(/^https:\/\/raincord\.dev\/fonts\//, ""));
-import { cloudSyncSettings } from "../storage";
-
-function stripNoCloudSync(obj: unknown) {
-    if (obj && typeof obj === "object") {
-        if (Array.isArray(obj)) {
-            const filtered: any[] = [];
-            for (const val of obj) {
-                const rep = stripNoCloudSync(val);
-                if (rep !== undefined) filtered.push(rep);
-            }
-            return filtered;
-        } else {
-            const objAny = obj as any;
-            if (objAny.__no_cloud_sync || objAny.__no_sync) return undefined;
-            const filtered: Record<string, any> = {};
-            for (const [key, value] of Object.entries(objAny)) {
-                if (key.startsWith("__")) continue;
-                const rep = stripNoCloudSync(value);
-                if (rep !== undefined) filtered[key] = rep;
-            }
-            return filtered;
-        }
-    } else return obj;
-}
 
 export async function grabEverything(): Promise<UserData & { coreSettings?: any }> {
     const sync = {
@@ -54,16 +32,19 @@ export async function grabEverything(): Promise<UserData & { coreSettings?: any 
         if (cloudSyncSettings.ignoredPlugins.includes(id)) continue;
         try {
             const storagePath = `plugins/${id}.json`;
-            const storage = await readFile(storagePath).catch(() => null);
+            const storage = await readStorageFile(storagePath);
             const pluginData: { enabled: boolean; storage?: string } = {
                 enabled: isPluginEnabled(id),
             };
             if (storage) {
-                pluginData.storage = JSON.stringify(stripNoCloudSync(JSON.parse(storage)));
+                pluginData.storage = sanitizePluginStorage(id, storage);
             }
             sync.plugins[pluginUrl(id)] = pluginData;
         } catch (e) {
-            logger.error(`[CloudSync] Failed to grab storage for ${id}:`, e);
+            logger.error(
+                `[CloudSync] Failed to grab storage for ${id}:`,
+                e instanceof Error ? e.name : "UnknownError"
+            );
         }
     }
 
@@ -110,7 +91,17 @@ export async function importData(data: UserData & { coreSettings?: any }) {
         try {
             if (item.storage) {
                 logger.log(`[CloudSync][Import] Writing settings for plugin ${id}`);
-                await writeFile(`plugins/${id}.json`, item.storage);
+                const storagePath = `plugins/${id}.json`;
+                const incomingStorage = item.storage;
+                if (id === "chattranslator") {
+                    await updateStorageFile(
+                        storagePath,
+                        localStorage => prepareImportedPluginStorage(id, incomingStorage, localStorage)
+                    );
+                } else {
+                    await writeStorageFile(storagePath, incomingStorage);
+                }
+                await rehydratePluginStore(id);
             }
             const currentlyEnabled = isPluginEnabled(id);
             if (item.enabled && !currentlyEnabled) {
@@ -122,7 +113,10 @@ export async function importData(data: UserData & { coreSettings?: any }) {
             }
             status.plugins++;
         } catch (e) {
-            logger.error(`[CloudSync] Failed to import plugin ${id}:`, e);
+            logger.error(
+                `[CloudSync] Failed to import plugin ${id}:`,
+                e instanceof Error ? e.name : "UnknownError"
+            );
         }
     }
 

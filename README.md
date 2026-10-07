@@ -57,3 +57,11 @@ Bug reports are a crucial part of development, they make the project more stable
 ## Contributing
 
 Discover how you can contribute at [contribution.md](contribution.md)!
+
+### ChatTranslator reliability
+
+Translation requests share duplicate work, prioritize manual actions, and limit concurrent and queued requests. Outgoing messages retain their order within each channel; a cancelled or failed translation sends the original message once. Code blocks, inline code, URLs, and Discord mentions are preserved. Edited or deleted messages cannot be replaced by a stale translation.
+
+CloudSync excludes ChatTranslator's DeepL and Azure API keys from uploads and preserves this device's keys during imports. Storage operations run in order, and a failed settings read does not overwrite the file with defaults. Translation cache writes do not trigger cloud sync. Older cache entries without the current request metadata are rebuilt as messages are translated again.
+
+Run `bun run test:chattranslator` for request, storage, message lifecycle, input menu, and compatibility regressions. Run `node --test scripts/boot-diagnostics.test.mjs` for startup diagnostics and `bun run build --release-branch=main --build-bytecode` to build JavaScript and Hermes bytecode. Device testing is still needed to verify the complete Discord UI on each supported version.
